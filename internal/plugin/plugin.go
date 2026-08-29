@@ -24,7 +24,7 @@ const ProviderID = "opencode-go"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "opencode-go-cliproxyapi"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.1.1"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
