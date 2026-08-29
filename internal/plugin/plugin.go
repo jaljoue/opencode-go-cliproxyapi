@@ -27,11 +27,9 @@ const (
 	pluginVersion = "0.1.0"
 )
 
-// placeholderRepoURL satisfies the host's validPlugin gate (host.go
-// validPlugin rejects empty Metadata.GitHubRepository), which would
-// otherwise drop the plugin on every register/reconfigure.
-// TODO(before publish): replace with the real repository URL — see docs/plugin-store.md.
-const placeholderRepoURL = "https://github.com/TODO-set-real-repo-before-publish/opencode-go-cliproxyapi"
+// githubRepoURL satisfies the host's validPlugin gate (host.go
+// validPlugin rejects empty Metadata.GitHubRepository).
+const githubRepoURL = "https://github.com/massiveits/opencode-go-cliproxyapi"
 
 // registerRefreshTimeout bounds ONLY the synchronous initial/reconfigure
 // refreshOnce so a slow catalog cannot block host startup/reconfigure for a
@@ -172,7 +170,7 @@ func registrationEnvelope() []byte {
 			Name:             pluginName,
 			Version:          pluginVersion,
 			Author:           pluginName,
-			GitHubRepository: placeholderRepoURL,
+			GitHubRepository: githubRepoURL,
 			ConfigFields:     []pluginapi.ConfigField{},
 		},
 		Capabilities: capabilities{
