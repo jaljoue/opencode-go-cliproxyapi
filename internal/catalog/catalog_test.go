@@ -214,7 +214,8 @@ func TestCompatExactIDs(t *testing.T) {
 		"mimo-v2.5":         RouteChatCompletions,
 		"mimo-v2.5-pro":     RouteChatCompletions,
 		"hy3":               RouteChatCompletions,
-		"ox-alpha-free":     RouteChatCompletions,
+		"hy4-preview":       RouteChatCompletions,
+		"longcat-2.0":       RouteChatCompletions,
 		// Messages.
 		"minimax-m3":   RouteMessages,
 		"minimax-m2.7": RouteMessages,
@@ -262,10 +263,12 @@ func TestCompatPrefixFallback(t *testing.T) {
 		"minimax-m99":    RouteMessages,
 		"mimo-x":         RouteChatCompletions,
 		"hy3-extreme":    RouteChatCompletions,
-		"ox-alpha-beta":  RouteChatCompletions,
+		"hy4-turbo":      RouteChatCompletions,
+		"longcat-max":    RouteChatCompletions,
 		"GLM-5.2":        RouteChatCompletions,
 		"DeepSeek-V4-X":  RouteChatCompletions,
 		"HY3":            RouteChatCompletions,
+		"HY4":            RouteChatCompletions,
 		"GPT-5.6-LUNA-X": RouteResponses,
 		"QWEN4-MAX":      RouteMessages,
 	}

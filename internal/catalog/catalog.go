@@ -123,14 +123,14 @@ var prefixRoutes = []struct {
 	{"muse-spark", RouteResponses},
 	{"deepseek", RouteChatCompletions},
 	{"minimax", RouteMessages},
-	{"ox-alpha", RouteChatCompletions},
+	{"longcat", RouteChatCompletions},
 	{"grok", RouteResponses},
 	{"gpt", RouteResponses},
 	{"kimi", RouteChatCompletions},
 	{"qwen", RouteMessages},
 	{"glm", RouteChatCompletions},
 	{"mimo", RouteChatCompletions},
-	{"hy3", RouteChatCompletions},
+	{"hy", RouteChatCompletions},
 }
 
 // Manager owns the catalog snapshot. All accessors are safe for
