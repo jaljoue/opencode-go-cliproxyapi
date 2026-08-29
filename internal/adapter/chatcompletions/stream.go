@@ -154,13 +154,22 @@ func sseData(line string) (payload string, ok bool) {
 	return strings.TrimSpace(rest), true
 }
 
-// passthroughLine re-emits the complete SSE line verbatim, preserving
-// framing (FR-003); [DONE] terminates the stream.
+// passthroughLine extracts the bare data payload for openai-target emissions;
+// [DONE] terminates the stream without emitting a chunk (CPA's WriteDone
+// automatically writes the trailing data: [DONE]).
 func (sc *StreamConverter) passthroughLine(line string) [][]byte {
-	if data, ok := sseData(line); ok && shared.IsSSEDone(data) {
-		sc.done = true
+	data, ok := sseData(line)
+	if !ok {
+		return nil
 	}
-	return [][]byte{append([]byte(line), '\n')}
+	if shared.IsSSEDone(data) {
+		sc.done = true
+		return nil
+	}
+	if data == "" {
+		return nil
+	}
+	return [][]byte{[]byte(data)}
 }
 
 // ---- upstream Chat Completions chunk shape ----

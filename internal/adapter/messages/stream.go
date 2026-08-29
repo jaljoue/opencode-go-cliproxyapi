@@ -225,7 +225,6 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 			shared.TerminalReason(sc.toolsSeen, "tool_calls",
 				shared.ClaudeStopToFinish(ev.Delta.StopReason)), true)
 	case "message_stop":
-		*events = append(*events, shared.SSEDone())
 		return true, nil
 	case "error":
 		return false, sseError(ev.Error)
@@ -348,7 +347,7 @@ func (sc *StreamConverter) Flush() [][]byte {
 	case "openai-response":
 		return [][]byte{sc.responsesCompleted()}
 	case "openai":
-		return [][]byte{shared.SSEDone()}
+		return nil
 	default: // claude passthrough forwards verbatim; nothing deferred
 		return nil
 	}

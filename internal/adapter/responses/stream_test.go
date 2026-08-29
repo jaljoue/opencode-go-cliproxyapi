@@ -62,10 +62,17 @@ func parseSSE(t *testing.T, b []byte) (event, data string) {
 
 func payloadOf(t *testing.T, b []byte) map[string]any {
 	t.Helper()
-	_, data := parseSSE(t, b)
+	s := strings.TrimSpace(string(b))
+	var raw []byte
+	if strings.HasPrefix(s, "data:") || strings.HasPrefix(s, "event:") {
+		_, data := parseSSE(t, b)
+		raw = []byte(data)
+	} else {
+		raw = []byte(s)
+	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(data), &m); err != nil {
-		t.Fatalf("bad synthesized payload %q: %v", data, err)
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("bad synthesized payload %q: %v", raw, err)
 	}
 	return m
 }
@@ -163,7 +170,7 @@ func TestConversionMultiLineDataJoinedWithoutRaw(t *testing.T) {
 	if eErr != nil {
 		t.Fatalf("unexpected error: %v", eErr)
 	}
-	if len(events) != 3 || !done {
+	if len(events) != 2 || !done {
 		t.Fatalf("events=%d done=%v", len(events), done)
 	}
 	m := payloadOf(t, events[0])
@@ -316,7 +323,7 @@ func TestOpenAIToolCallFlow(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	if len(events) != 6 { // role, announce, 2 arg deltas, final, [DONE]
+	if len(events) != 5 { // role, announce, 2 arg deltas, final
 		t.Fatalf("events=%d: %s", len(events), events)
 	}
 	announce := choice0(t, payloadOf(t, events[1]))["delta"].(map[string]any)
@@ -345,9 +352,6 @@ func TestOpenAIToolCallFlow(t *testing.T) {
 	usage := final["usage"].(map[string]any)
 	if usage["prompt_tokens"] != float64(11) || usage["completion_tokens"] != float64(3) || usage["total_tokens"] != float64(14) {
 		t.Errorf("usage = %v", usage)
-	}
-	if string(events[5]) != "data: [DONE]\n\n" {
-		t.Errorf("terminal frame = %q", events[5])
 	}
 }
 
@@ -405,7 +409,7 @@ func TestOpenAICompletedStopNoTools(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	if len(events) != 4 {
+	if len(events) != 3 {
 		t.Fatalf("events=%d", len(events))
 	}
 	start := payloadOf(t, events[0])
@@ -429,7 +433,7 @@ func TestOpenAIIncompleteLength(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	final := payloadOf(t, events[len(events)-2])
+	final := payloadOf(t, events[len(events)-1])
 	if got := choice0(t, final)["finish_reason"]; got != "length" {
 		t.Errorf("finish_reason = %v", got)
 	}
@@ -444,7 +448,7 @@ func TestOpenAIIncompleteWithToolsKeepsToolCalls(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	final := payloadOf(t, events[len(events)-2])
+	final := payloadOf(t, events[len(events)-1])
 	if got := choice0(t, final)["finish_reason"]; got != "tool_calls" {
 		t.Errorf("finish_reason = %v, want tool_calls", got)
 	}
@@ -823,7 +827,7 @@ func TestCRLFStreamTolerated(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	if len(events) != 3 { // role chunk + final + [DONE]
+	if len(events) != 2 { // role chunk + final
 		t.Fatalf("events=%d: %s", len(events), events)
 	}
 	if id := payloadOf(t, events[0])["id"]; id != "resp_1" {
@@ -1161,7 +1165,7 @@ func TestOpenAICallIDAndItemIDAreOneCall(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	if len(events) != 6 { // role, announce, 2 arg deltas, final, [DONE] — no ghost events
+	if len(events) != 5 { // role, announce, 2 arg deltas, final — no ghost events
 		t.Fatalf("events=%d: %s", len(events), events)
 	}
 	announce := choice0(t, payloadOf(t, events[1]))["delta"].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)

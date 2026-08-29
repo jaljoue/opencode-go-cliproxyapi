@@ -29,12 +29,13 @@ func dataFrames(t *testing.T, events [][]byte) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, e := range events {
-		s := string(e)
-		if !strings.HasPrefix(s, "data: ") || strings.TrimSpace(strings.TrimPrefix(s, "data:")) == "[DONE]" {
+		s := strings.TrimSpace(string(e))
+		if s == "" || s == "[DONE]" || s == "data: [DONE]" {
 			continue
 		}
+		s = strings.TrimPrefix(s, "data: ")
 		var m map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(s, "data: "), "\n\n")), &m); err != nil {
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
 			t.Fatalf("bad frame %q: %v", s, err)
 		}
 		out = append(out, m)
@@ -206,9 +207,6 @@ func TestStreamOpenAIFullFlow(t *testing.T) {
 	}
 	if !done {
 		t.Error("done not reached")
-	}
-	if string(events[len(events)-1]) != "data: [DONE]\n\n" {
-		t.Errorf("missing [DONE] terminator: %q", events[len(events)-1])
 	}
 	joined := strings.Join(mapJoin(events), "")
 	if strings.Contains(joined, "hush") {
@@ -664,11 +662,11 @@ func TestStreamConverterFlushAfterCloseWithoutMessageStop(t *testing.T) {
 		}
 	})
 
-	t.Run("openai target receives DONE once", func(t *testing.T) {
+	t.Run("openai target flush is empty", func(t *testing.T) {
 		sc := NewStreamConverter("openai")
 		feedToDelta(t, sc)
 		flushed := sc.Flush()
-		if len(flushed) != 1 || string(flushed[0]) != "data: [DONE]\n\n" {
+		if len(flushed) != 0 {
 			t.Fatalf("flush = %v", flushed)
 		}
 		if again := sc.Flush(); len(again) != 0 {

@@ -183,9 +183,6 @@ func TestImageSource(t *testing.T) {
 
 func TestSSEFraming(t *testing.T) {
 	payload := json.RawMessage(`{"a":1}`)
-	if got := string(SSEData(payload)); got != "data: {\"a\":1}\n\n" {
-		t.Fatalf("SSEData = %q", got)
-	}
 	if got := string(SSEEvent("n", payload)); got != "event: n\ndata: {\"a\":1}\n\n" {
 		t.Fatalf("SSEEvent = %q", got)
 	}
@@ -198,26 +195,26 @@ func TestChatChunkBuilderFrameShapes(t *testing.T) {
 	envelope := `"created":1700000000,"id":"msg_1","model":"minimax","object":"chat.completion.chunk"`
 
 	got, want := string(b.RoleChunk()),
-		`data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],`+envelope+"}\n\n"
+		`{"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0}],`+envelope+"}"
 	if got != want {
 		t.Fatalf("RoleChunk = %q, want %q", got, want)
 	}
 
 	got, want = string(b.Delta(map[string]any{"content": "hi"})),
-		`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null,"index":0}],`+envelope+"}\n\n"
+		`{"choices":[{"delta":{"content":"hi"},"finish_reason":null,"index":0}],`+envelope+"}"
 	if got != want {
 		t.Fatalf("Delta = %q, want %q", got, want)
 	}
 
 	got, want = string(b.Finish("tool_calls", CCUsageFrom(10, 7))),
-		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],`+envelope+
-			`,"usage":{"completion_tokens":7,"prompt_tokens":10,"total_tokens":17}}`+"\n\n"
+		`{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],`+envelope+
+			`,"usage":{"completion_tokens":7,"prompt_tokens":10,"total_tokens":17}}`
 	if got != want {
 		t.Fatalf("Finish = %q, want %q", got, want)
 	}
 
 	got, want = string(b.Finish("", nil)),
-		`data: {"choices":[{"delta":{},"finish_reason":null,"index":0}],`+envelope+"}\n\n"
+		`{"choices":[{"delta":{},"finish_reason":null,"index":0}],`+envelope+"}"
 	if got != want {
 		t.Fatalf("Finish(empty) = %q, want %q", got, want)
 	}
@@ -229,7 +226,7 @@ func TestChatChunkBuilderDefaults(t *testing.T) {
 	var f struct {
 		Created int64 `json:"created"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(string(b.RoleChunk()), "data: "), "\n\n")), &f); err != nil {
+	if err := json.Unmarshal(b.RoleChunk(), &f); err != nil {
 		t.Fatal(err)
 	}
 	if f.Created <= 0 {

@@ -18,7 +18,7 @@ import (
 var (
 	cpaHost   = envOrDefault("CPA_HOST", "http://localhost:8317")
 	cpaKey    = envOrDefault("CPA_KEY", "123")
-	cpaPrefix = envOrDefault("CPA_PREFIX", "opencode-go")
+	cpaPrefix = envOrDefault("CPA_PREFIX", "")
 )
 
 func envOrDefault(key, fallback string) string {

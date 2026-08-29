@@ -55,12 +55,12 @@ func TestStreamConverterOpenAIPassthrough(t *testing.T) {
 	if eErr != nil || done {
 		t.Fatalf("unexpected: done=%v err=%v", done, eErr)
 	}
-	if len(evs) != 2 || string(evs[0]) != frame[:len(frame)-1] || string(evs[1]) != "\n" {
-		t.Fatalf("framing not preserved verbatim: %q", evs)
+	if len(evs) != 1 || string(evs[0]) != `{"id":"1","choices":[{"delta":{"content":"hi"}}]}` {
+		t.Fatalf("bare JSON payload not extracted: %q", evs)
 	}
 	evs, _, eErr = sc.Feed([]byte(": keep-alive\n"))
-	if eErr != nil || string(evs[0]) != ": keep-alive\n" {
-		t.Fatalf("keep-alive line not passed through: %v %v", evs, eErr)
+	if eErr != nil || len(evs) != 0 {
+		t.Fatalf("keep-alive line should be skipped: %v %v", evs, eErr)
 	}
 	if _, done, _ = sc.Feed([]byte("data: [DONE]\n")); !done {
 		t.Fatal("[DONE] must set done")

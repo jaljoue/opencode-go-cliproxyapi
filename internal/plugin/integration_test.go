@@ -732,7 +732,6 @@ func TestChatStreamingRoundTrip(t *testing.T) {
 
 	events := emittedEvents(t, f)
 	joined := strings.Join(events, "")
-	// The converter emits per SSE line, blank separator lines included.
 	if !strings.Contains(joined, `"content":"Hel"`) || !strings.Contains(joined, `"content":"lo"`) {
 		t.Fatalf("text deltas missing:\n%s", joined)
 	}
@@ -743,8 +742,8 @@ func TestChatStreamingRoundTrip(t *testing.T) {
 			break
 		}
 	}
-	if !strings.HasSuffix(last, "data: [DONE]") {
-		t.Fatalf("stream must end with [DONE], got %q", last)
+	if !strings.Contains(last, `"finish_reason":"stop"`) {
+		t.Fatalf("stream must end with finish_reason stop, got %q", last)
 	}
 	assertCleanStreamClose(t, f)
 }

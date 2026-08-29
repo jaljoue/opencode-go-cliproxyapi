@@ -480,7 +480,7 @@ func (sc *StreamConverter) terminal(incomplete bool, in, out int) ([][]byte, boo
 		// when upstream reported none. Shared kernel keeps total_tokens
 		// consistent with the non-stream Chat Completions mapper.
 		chunk := sc.chatChunks().Finish(finish, shared.CCUsageFrom(int64(in), int64(out)))
-		return [][]byte{chunk, shared.SSEDone()}, true, nil
+		return [][]byte{chunk}, true, nil
 	}
 	statusStop := shared.ClaudeStopFromResponseStatus(st)
 	stop := shared.TerminalReason(sc.toolCallsSeen, "tool_use", statusStop)

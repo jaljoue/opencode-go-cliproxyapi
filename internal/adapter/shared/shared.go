@@ -475,15 +475,6 @@ func ClaudeImageURL(srcType, url, mediaType, data string) (string, *errclass.Err
 	}
 }
 
-// SSEData renders one data-only SSE frame.
-func SSEData(v any) []byte {
-	b, _ := json.Marshal(v) // composed marshallable types only; cannot fail
-	out := make([]byte, 0, len("data: ")+len(b)+2)
-	out = append(out, "data: "...)
-	out = append(out, b...)
-	return append(out, '\n', '\n')
-}
-
 // SSEEvent renders one named SSE frame.
 func SSEEvent(name string, v any) []byte {
 	b, _ := json.Marshal(v) // composed marshallable types only; cannot fail
@@ -493,11 +484,6 @@ func SSEEvent(name string, v any) []byte {
 	out = append(out, "\ndata: "...)
 	out = append(out, b...)
 	return append(out, '\n', '\n')
-}
-
-// SSEDone renders the OpenAI-style terminal stream sentinel frame.
-func SSEDone() []byte {
-	return []byte("data: [DONE]\n\n")
 }
 
 // IsSSEDone reports whether a framer-stripped SSE data payload is the
@@ -551,7 +537,8 @@ func (b ChatChunkBuilder) frame(delta, finish any, usage map[string]any) []byte 
 	if usage != nil {
 		frame["usage"] = usage
 	}
-	return SSEData(frame)
+	raw, _ := json.Marshal(frame)
+	return raw
 }
 
 // ClaudeEventEmitter renders canonical Anthropic Messages SSE frames so

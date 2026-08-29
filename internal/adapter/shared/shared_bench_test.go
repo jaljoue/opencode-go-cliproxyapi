@@ -24,13 +24,6 @@ var benchPayload = map[string]any{
 // or send bare IDs (the rewrite is then a pure no-op).
 var benchBody = []byte(`{"model":"gpt-5.6-luna","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"Write me a haiku about latency budgets in distributed systems."}]}],"max_tokens":4096}`)
 
-func BenchmarkSSEData(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = SSEData(benchPayload)
-	}
-}
-
 func BenchmarkSSEEvent(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
@@ -98,18 +91,12 @@ func TestRewriteModelIDNoopReturnsOriginalBody(t *testing.T) {
 // copies; these pins guard against drift in the append-chain rewrite.
 func TestSSEFrameBytesUnchanged(t *testing.T) {
 	payload := map[string]any{"a": 1}
-	if got := string(SSEData(payload)); got != "data: {\"a\":1}\n\n" {
-		t.Fatalf("SSEData = %q", got)
-	}
 	if got := string(SSEEvent("n", payload)); got != "event: n\ndata: {\"a\":1}\n\n" {
 		t.Fatalf("SSEEvent = %q", got)
 	}
 }
 
 func TestSSEDoneHelpers(t *testing.T) {
-	if got := string(SSEDone()); got != "data: [DONE]\n\n" {
-		t.Fatalf("SSEDone = %q", got)
-	}
 	for _, tc := range []struct{ in, name string }{
 		{"[DONE]", "framer data"},
 		{"  [DONE]  ", "padded"},
