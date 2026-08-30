@@ -2,7 +2,24 @@
 
 A native dynamic Go plugin for [CLIProxyAPI](https://help.router-for.me/plugin/development) that exposes OpenCode Go as a single provider (`opencode-go`).
 
-The plugin unifies model discovery, protocol translation, and execution across OpenCode Go's upstream endpoints while leveraging CLIProxyAPI's built-in authentication, scheduling, key rotation, and cooldown management.
+The plugin unifies model discovery, protocol translation, and execution across OpenCode Go's upstream endpoints while leveraging CLIProxyAPI's built-in authentication, scheduling, keys rotation, and cooldown management.
+
+## The Problem
+
+OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, and OpenAI Responses `/v1/responses`).
+
+Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separate provider blocks for each protocol family. This leads to:
+- **Duplicated configuration & keys**: The same API keys must be configured across multiple provider blocks.
+- **Fragmented scheduling & rotation**: Keys rotation, rate limits, and cooldowns cannot be shared across protocols—exhausting quota on one protocol does not coordinate with another.
+- **Client protocol burden**: Clients must know beforehand which upstream protocol and endpoint each model requires.
+- **Fragmented catalog**: Models are split across disjoint provider namespaces instead of a unified model list.
+
+## The Solution
+
+This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a shared keys pool:
+- **Unified auth pool**: Configure keys once; CLIProxyAPI schedules, rotates, and cools down keys across all protocols.
+- **Transparent protocol translation & routing**: Clients request models (e.g. `opencode-go/glm-5.2`, `opencode-go/gpt-5.6-luna`) without needing to know the upstream protocol format.
+- **Single model catalog**: All models are discovered and published under the `opencode-go` provider namespace in `/v1/models`.
 
 ## Features
 
@@ -13,7 +30,7 @@ The plugin unifies model discovery, protocol translation, and execution across O
   - OpenAI Responses (`/v1/responses`)
 - **Thinking & Reasoning Support**: Maps reasoning effort across supported client and upstream formats.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
-- **Native Auth Scheduling**: Registers API keys with CLIProxyAPI's auth scheduler for selection, retries, and error cooldowns.
+- **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 
 ## Requirements
 
@@ -63,6 +80,7 @@ plugins:
       # OpenCode Go API keys (at least one required). Supports ${ENV_VAR} expansion.
       api-keys:
         - value: "sk-opencode-key-1"
+        - value: "sk-opencode-key-2"
         - value: "${OPENCODE_GO_API_KEY}"
 
       # Catalog discovery settings
