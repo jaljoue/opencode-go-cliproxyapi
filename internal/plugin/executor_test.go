@@ -312,6 +312,9 @@ func TestExecuteMessagesRouteNativeClaudePassesThrough(t *testing.T) {
 
 func TestExecuteMessagesUpstreamStatusClassified(t *testing.T) {
 	f := &fakeCaller{responder: wrapWithCatalog(multiRouteCatalog, func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostOK(map[string]any{}), nil
+		}
 		if method == pluginabi.MethodHostAuthSave {
 			return hostOK(map[string]any{}), nil
 		}
@@ -1098,6 +1101,9 @@ func TestExecuteTransportErrorClassified(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	f.responder = wrapWithCatalog(testCatalogJSON, func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostOK(map[string]any{}), nil
+		}
 		if method == pluginabi.MethodHostAuthSave {
 			return hostOK(map[string]any{}), nil
 		}

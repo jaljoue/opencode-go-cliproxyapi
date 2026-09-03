@@ -24,7 +24,7 @@ const ProviderID = "opencode-go"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "opencode-go-cliproxyapi"
-	pluginVersion = "0.1.1"
+	pluginVersion = "0.1.2"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
@@ -198,10 +198,12 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 		debugTrace("lifecycle config_error=%s", err.Error())
 		return ErrEnvelope("invalid_config", err.Error()), nil
 	}
+	m.lifeMu.Lock()
+	defer m.lifeMu.Unlock()
 	debugTrace("lifecycle config_loaded key_count=%d prefix_enabled=%t prefix=%s", len(cfg.APIKeys), cfg.ModelPrefix.Enabled, cfg.ModelPrefix.Value)
 	ctx, cancel := context.WithTimeout(context.Background(), registerRefreshTimeout)
 	defer cancel()
-	if err := materializeAuthRecords(ctx, m.bridge, cfg); err != nil {
+	if err := m.materializeAuthRecords(ctx, cfg); err != nil {
 		return ErrEnvelope("auth_materialization_failed", err.Error()), nil
 	}
 	// A nil *HostBridge must not enter the interface as a typed nil, or
@@ -214,11 +216,9 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	refreshErr := refreshOnce(context.Background(), mgr, m.bridge, registerRefreshTimeout, cfg)
 	debugTrace("lifecycle refresh_complete model_count=%d refresh_error=%t", len(mgr.Models()), refreshErr != nil)
 
-	// Retire any running loop and wait for its exit OUTSIDE the lock: a
-	// mid-refresh tick must never stall readers holding RLock (F4). lifeMu
-	// keeps the stop-wait-install sequence atomic against other lifecycles.
-	m.lifeMu.Lock()
-	defer m.lifeMu.Unlock()
+	// Retire any running loop and wait for its exit outside m.mu: a mid-refresh
+	// tick must never stall readers holding RLock (F4). lifeMu keeps the
+	// stop-wait-install sequence atomic against other lifecycles.
 	if oldDone := m.closeStop(); oldDone != nil {
 		<-oldDone
 	}
@@ -249,18 +249,39 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	return registrationEnvelope(), nil
 }
 
-// materializeAuthRecords makes CPA-visible auth files idempotently. The full
-// key digest is non-secret and independent of config ordering. The host ABI has
-// no delete/disable callback, so removed keys remain stale records and are not
-// claimed as removed; a later migration must add explicit lifecycle support.
-func materializeAuthRecords(ctx context.Context, bridge *HostBridge, cfg config.Config) error {
-	if bridge == nil {
+// materializeAuthRecords makes CPA-visible auth files idempotently. Existing
+// records are discovered through CPA so their host-managed metadata is never
+// overwritten. The full key digest is non-secret and independent of config
+// ordering. The host ABI has no delete/disable callback, so removed keys remain
+// stale records and are not claimed as removed.
+func (m *Manager) materializeAuthRecords(ctx context.Context, cfg config.Config) error {
+	if m.bridge == nil {
 		return nil
+	}
+	entries, err := m.bridge.AuthList(ctx)
+	if err != nil {
+		return fmt.Errorf("list existing auth records: %w", err)
+	}
+	existing := make(map[string]struct{}, len(entries)*2)
+	for _, entry := range entries {
+		if name := strings.TrimSpace(entry.Name); name != "" {
+			existing[name] = struct{}{}
+		}
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			existing[id] = struct{}{}
+		}
 	}
 	for _, key := range cfg.APIKeys {
 		digest := sha256.Sum256([]byte(key.Value))
 		hash := hex.EncodeToString(digest[:])
 		id := "opencode-go-key-" + hash
+		name := id + ".json"
+		if _, ok := existing[id]; ok {
+			continue
+		}
+		if _, ok := existing[name]; ok {
+			continue
+		}
 		record, err := json.Marshal(struct {
 			Type   string `json:"type"`
 			ID     string `json:"id"`
@@ -272,12 +293,14 @@ func materializeAuthRecords(ctx context.Context, bridge *HostBridge, cfg config.
 		if err != nil {
 			return fmt.Errorf("build auth record")
 		}
-		if err := bridge.AuthSave(ctx, pluginapi.HostAuthSaveRequest{
-			Name: id + ".json", JSON: record,
+		if err := m.bridge.AuthSave(ctx, pluginapi.HostAuthSaveRequest{
+			Name: name, JSON: record,
 		}); err != nil {
 			return err
 		}
-		debugTrace("auth materialized id=%s file=%s", id, id+".json")
+		existing[id] = struct{}{}
+		existing[name] = struct{}{}
+		debugTrace("auth materialized id=%s file=%s", id, name)
 	}
 	return nil
 }

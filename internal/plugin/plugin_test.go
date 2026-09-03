@@ -41,16 +41,65 @@ type fakeCaller struct {
 	mu        sync.Mutex
 	calls     []capturedCall
 	responder func(method string, payload []byte) ([]byte, error)
+	authFiles map[string]struct{}
 }
 
 func (f *fakeCaller) call(method string, payload []byte) ([]byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, capturedCall{method: method, payload: payload})
 	f.mu.Unlock()
+	var raw []byte
+	var err error
 	if f.responder != nil {
-		return f.responder(method, payload)
+		raw, err = f.responder(method, payload)
+	} else {
+		raw = hostOK(map[string]any{})
 	}
-	return hostOK(map[string]any{}), nil
+	if method == pluginabi.MethodHostAuthList && err == nil && !hasExplicitAuthList(raw) {
+		return f.authListResponse(), nil
+	}
+	if method == pluginabi.MethodHostAuthSave && err == nil && hostEnvelopeOK(raw) {
+		var req pluginapi.HostAuthSaveRequest
+		if json.Unmarshal(payload, &req) == nil && strings.TrimSpace(req.Name) != "" {
+			f.mu.Lock()
+			if f.authFiles == nil {
+				f.authFiles = make(map[string]struct{})
+			}
+			f.authFiles[req.Name] = struct{}{}
+			f.mu.Unlock()
+		}
+	}
+	return raw, err
+}
+
+func hostEnvelopeOK(raw []byte) bool {
+	var env pluginabi.Envelope
+	return json.Unmarshal(raw, &env) == nil && env.OK
+}
+
+func hasExplicitAuthList(raw []byte) bool {
+	var env pluginabi.Envelope
+	if json.Unmarshal(raw, &env) != nil || !env.OK {
+		return true
+	}
+	var result map[string]json.RawMessage
+	if json.Unmarshal(env.Result, &result) != nil {
+		return true
+	}
+	_, ok := result["files"]
+	return ok
+}
+
+func (f *fakeCaller) authListResponse() []byte {
+	f.mu.Lock()
+	files := make([]pluginapi.HostAuthFileEntry, 0, len(f.authFiles))
+	for name := range f.authFiles {
+		files = append(files, pluginapi.HostAuthFileEntry{
+			ID: strings.TrimSuffix(name, ".json"), Name: name, Source: "file", Path: name,
+		})
+	}
+	f.mu.Unlock()
+	return hostOK(hostAuthListResponse{Files: files})
 }
 
 func (f *fakeCaller) recorded() []capturedCall {
@@ -339,6 +388,28 @@ func TestBridgeAuthSaveWireAndRedactsFailures(t *testing.T) {
 	}
 }
 
+func TestBridgeAuthListDecodesEntries(t *testing.T) {
+	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
+		if method != pluginabi.MethodHostAuthList {
+			t.Fatalf("method = %q, want %q", method, pluginabi.MethodHostAuthList)
+		}
+		var req map[string]any
+		if err := json.Unmarshal(payload, &req); err != nil {
+			t.Fatalf("list payload not json: %v", err)
+		}
+		return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{{
+			ID: "opencode-go-key-existing", Name: "opencode-go-key-existing.json", Priority: 7,
+		}}}), nil
+	}}
+	entries, err := NewHostBridge(f.call).AuthList(context.Background())
+	if err != nil {
+		t.Fatalf("AuthList: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "opencode-go-key-existing" || entries[0].Name != "opencode-go-key-existing.json" || entries[0].Priority != 7 {
+		t.Fatalf("auth entries = %+v", entries)
+	}
+}
+
 // ---- dispatcher: registration ------------------------------------------
 
 func TestRegisterSuccessPublishesModels(t *testing.T) {
@@ -402,7 +473,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 }
 
 func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
-	first, second := "sk-materialize-a", "sk-materialize-b"
+	first, second, third := "sk-materialize-a", "sk-materialize-b", "sk-materialize-c"
 	yamlText := "api-keys:\n  - value: " + first + "\n  - value: " + second + "\n"
 	f := &fakeCaller{responder: catalogResponder(true, testCatalogJSON)}
 	m := NewManager(NewHostBridge(f.call))
@@ -414,8 +485,8 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 		t.Fatalf("reconfigure: %v", err)
 	}
 	calls := f.callsOf(pluginabi.MethodHostAuthSave)
-	if len(calls) != 4 {
-		t.Fatalf("auth saves = %d, want one per key per lifecycle", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("unchanged reconfigure auth saves = %d, want 2", len(calls))
 	}
 	seen := map[string]bool{}
 	for _, call := range calls {
@@ -449,8 +520,70 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 	}
 	// No delete callback exists in the pinned ABI: the old record is stale and
 	// remains in CPA rather than being falsely reported as removed.
-	if len(f.callsOf(pluginabi.MethodHostAuthSave)) != 5 {
-		t.Fatalf("stale policy changed save count = %d, want 5", len(f.callsOf(pluginabi.MethodHostAuthSave)))
+	if len(f.callsOf(pluginabi.MethodHostAuthSave)) != 2 {
+		t.Fatalf("removed-key reconfigure changed save count = %d, want 2", len(f.callsOf(pluginabi.MethodHostAuthSave)))
+	}
+	if _, err := m.HandleCall("plugin.reconfigure", lifecycleRequestBody("api-keys:\n  - value: "+first+"\n  - value: "+third+"\n")); err != nil {
+		t.Fatalf("new-key reconfigure: %v", err)
+	}
+	calls = f.callsOf(pluginabi.MethodHostAuthSave)
+	if len(calls) != 3 {
+		t.Fatalf("new-key reconfigure auth saves = %d, want 3", len(calls))
+	}
+	var newRecord struct {
+		APIKey string `json:"api_key"`
+	}
+	var wire pluginapi.HostAuthSaveRequest
+	if err := json.Unmarshal(calls[2].payload, &wire); err != nil {
+		t.Fatalf("new auth wire: %v", err)
+	}
+	if err := json.Unmarshal(wire.JSON, &newRecord); err != nil || newRecord.APIKey != third {
+		t.Fatalf("new auth record = %+v, want key %q", newRecord, third)
+	}
+}
+
+func TestLifecycleUsesCPAAuthListAfterManagerRestart(t *testing.T) {
+	f := &fakeCaller{responder: catalogResponder(true, testCatalogJSON)}
+	first := NewManager(NewHostBridge(f.call))
+	if _, err := first.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	if _, err := first.HandleCall("plugin.shutdown", nil); err != nil {
+		t.Fatalf("first shutdown: %v", err)
+	}
+
+	second := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = second.HandleCall("plugin.shutdown", nil) })
+	if _, err := second.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostAuthSave)); got != 1 {
+		t.Fatalf("auth saves after manager restart = %d, want 1", got)
+	}
+}
+
+func TestLifecycleAuthListFailureDoesNotWrite(t *testing.T) {
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostErr("auth_unavailable", "auth directory unavailable"), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+	resp, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if env.OK || env.Error == nil || env.Error.Code != "auth_materialization_failed" {
+		t.Fatalf("list failure envelope = %+v", env.Error)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostAuthSave)); got != 0 {
+		t.Fatalf("auth saves after list failure = %d, want 0", got)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPDo)); got != 0 {
+		t.Fatalf("catalog calls after list failure = %d, want 0", got)
 	}
 }
 
@@ -807,7 +940,7 @@ func TestOverlappingLifecyclesLeaveSingleTicker(t *testing.T) {
 	// exit on stop (no orphaned loops keep refreshing). Validated configs
 	// floor refresh-interval at 1m, so the survivor is checked structurally
 	// — one tracked loop that exits on stop — instead of by counting ticks.
-	m, _ := newTestManager(catalogResponder(true, testCatalogJSON))
+	m, f := newTestManager(catalogResponder(true, testCatalogJSON))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -824,6 +957,9 @@ func TestOverlappingLifecyclesLeaveSingleTicker(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	if got := len(f.callsOf(pluginabi.MethodHostAuthSave)); got != 1 {
+		t.Fatalf("overlapping lifecycle auth saves = %d, want 1", got)
+	}
 	done := m.closeStop()
 	if done == nil {
 		t.Fatal("concurrent lifecycles left no tracked ticker")

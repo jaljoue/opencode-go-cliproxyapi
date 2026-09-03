@@ -50,6 +50,10 @@ type hostHTTPReq struct {
 	Body    []byte      `json:"body"`
 }
 
+type hostAuthListResponse struct {
+	Files []pluginapi.HostAuthFileEntry `json:"files"`
+}
+
 // hostLogReq is the wire shape accepted by host.log.
 type hostLogReq struct {
 	Level   string         `json:"level"`
@@ -81,6 +85,21 @@ func (b *HostBridge) AuthSave(ctx context.Context, req pluginapi.HostAuthSaveReq
 		return fmt.Errorf("host auth save failed")
 	}
 	return nil
+}
+
+// AuthList returns the auth records currently known by CPA without modifying
+// their files. Callers use stable names/IDs to avoid overwriting CPA-managed
+// metadata during plugin registration.
+func (b *HostBridge) AuthList(ctx context.Context) ([]pluginapi.HostAuthFileEntry, error) {
+	env, err := b.invoke(ctx, pluginabi.MethodHostAuthList, struct{}{}, "host auth list")
+	if err != nil {
+		return nil, err
+	}
+	var resp hostAuthListResponse
+	if len(env.Result) > 0 && json.Unmarshal(env.Result, &resp) != nil {
+		return nil, fmt.Errorf("host auth list failed: undecodable response body")
+	}
+	return resp.Files, nil
 }
 
 // hostStreamIDReq addresses an existing stream by its ID.
