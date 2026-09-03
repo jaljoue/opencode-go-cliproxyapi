@@ -26,6 +26,8 @@ type StreamConverter struct {
 	model            string
 	promptTokens     int64
 	completionTokens int64
+	cacheRead        *int64
+	cacheCreation    *int64
 	stopReason       string // last observed message_delta stop_reason (responses terminal status)
 	toolsSeen        bool   // any tool_use block observed (openai finish-reason precedence)
 	roleSent         bool
@@ -147,8 +149,10 @@ type deltaBody struct {
 }
 
 type usageCounts struct {
-	InputTokens  float64 `json:"input_tokens"`
-	OutputTokens float64 `json:"output_tokens"`
+	InputTokens   float64  `json:"input_tokens"`
+	OutputTokens  float64  `json:"output_tokens"`
+	CacheRead     *float64 `json:"cache_read_input_tokens"`
+	CacheCreation *float64 `json:"cache_creation_input_tokens"`
 }
 
 // dispatchClaude passes event blocks through verbatim; an in-stream error
@@ -180,6 +184,7 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 		sc.msgID = ev.Message.ID
 		sc.model = ev.Message.Model
 		sc.promptTokens = int64(ev.Message.Usage.InputTokens)
+		sc.captureCache(ev.Message.Usage)
 		sc.emitRole(events)
 	case "content_block_start":
 		bs := &blockState{kind: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
@@ -218,7 +223,11 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 			// destination either.
 		}
 	case "message_delta":
+		if ev.Usage.InputTokens != 0 {
+			sc.promptTokens = int64(ev.Usage.InputTokens)
+		}
 		sc.completionTokens = int64(ev.Usage.OutputTokens)
+		sc.captureCache(ev.Usage)
 		// Observed tool calls outrank the status-derived reason: a
 		// terminal max_tokens cannot downgrade tool_calls to length.
 		sc.emitChunk(events, map[string]any{},
@@ -240,6 +249,7 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 		sc.msgID = ev.Message.ID
 		sc.model = ev.Message.Model
 		sc.promptTokens = int64(ev.Message.Usage.InputTokens)
+		sc.captureCache(ev.Message.Usage)
 		// Lifecycle parity with the Chat Completions route's synthesizer:
 		// announce the response before any deltas reference it (F18).
 		*events = append(*events, sc.responsesEm().Created())
@@ -297,7 +307,11 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 			// reasoning-delta event; dropped.
 		}
 	case "message_delta":
+		if ev.Usage.InputTokens != 0 {
+			sc.promptTokens = int64(ev.Usage.InputTokens)
+		}
 		sc.completionTokens = int64(ev.Usage.OutputTokens) // accumulated, reported on completion
+		sc.captureCache(ev.Usage)
 		sc.stopReason = ev.Delta.StopReason
 	case "message_stop":
 		*events = append(*events, sc.responsesCompleted())
@@ -318,7 +332,8 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 // close cannot diverge from the normal-path shape.
 func (sc *StreamConverter) responsesCompleted() []byte {
 	status := shared.ResponseStatusFromClaudeStop(sc.stopReason)
-	usage := shared.NewResponsesUsageFrom(sc.promptTokens, sc.completionTokens)
+	usage := shared.NewResponsesUsageFrom(sc.promptTokens+valueOrZero(sc.cacheRead)+valueOrZero(sc.cacheCreation), sc.completionTokens,
+		shared.UsageDetails{CachedTokens: sc.cacheRead, CacheWriteTokens: sc.cacheCreation})
 	return sc.responsesEm().Completed(status, usage, sc.outputItems())
 }
 
@@ -407,9 +422,21 @@ func (sc *StreamConverter) emitChunk(events *[][]byte, delta map[string]any, fin
 	}
 	var usage map[string]any
 	if withUsage {
-		usage = shared.CCUsageFrom(sc.promptTokens, sc.completionTokens)
+		usage = shared.CCUsageFrom(sc.promptTokens+valueOrZero(sc.cacheRead)+valueOrZero(sc.cacheCreation), sc.completionTokens,
+			shared.UsageDetails{CachedTokens: sc.cacheRead})
 	}
 	*events = append(*events, b.Finish(finish, usage))
+}
+
+func (sc *StreamConverter) captureCache(u usageCounts) {
+	if u.CacheRead != nil {
+		v := int64(*u.CacheRead)
+		sc.cacheRead = &v
+	}
+	if u.CacheCreation != nil {
+		v := int64(*u.CacheCreation)
+		sc.cacheCreation = &v
+	}
 }
 
 // sseError maps an Anthropic in-stream error event onto the shared

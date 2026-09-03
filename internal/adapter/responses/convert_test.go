@@ -335,6 +335,31 @@ func TestConvertResponsesReasoningItemOmitted(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesUsageDetailsAndAbsentUsage(t *testing.T) {
+	body := strings.Replace(respTextOnly, `"usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}`, `"usage":{"input_tokens":10,"output_tokens":4,"input_tokens_details":{"cached_tokens":7,"cache_write_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}`, 1)
+	for _, format := range []string{"openai", "claude"} {
+		out, eErr := ConvertNonStreamResponse(format, 200, []byte(body))
+		if eErr != nil {
+			t.Fatalf("%s: %v", format, eErr)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		u := m["usage"].(map[string]any)
+		if format == "openai" {
+			if u["prompt_tokens"] != float64(10) || u["prompt_tokens_details"].(map[string]any)["cached_tokens"] != float64(7) || u["completion_tokens_details"].(map[string]any)["reasoning_tokens"] != float64(3) {
+				t.Fatalf("chat usage = %v", u)
+			}
+		} else if u["input_tokens"] != float64(1) || u["cache_read_input_tokens"] != float64(7) || u["cache_creation_input_tokens"] != float64(2) {
+			t.Fatalf("claude usage = %v", u)
+		}
+	}
+	if _, eErr := ConvertNonStreamResponse("openai", 200, []byte(strings.Replace(respTextOnly, `,"usage":{"input_tokens":5,"output_tokens":6,"total_tokens":11}`, "", 1))); eErr != nil {
+		t.Fatalf("absent usage must remain valid: %v", eErr)
+	}
+}
+
 // A bare unknown item with no decodable payload is informational too.
 func TestConvertResponsesPayloadlessUnknownItemOmitted(t *testing.T) {
 	body := strings.Replace(respTextOnly,

@@ -256,6 +256,23 @@ func TestStreamOpenAIFullFlow(t *testing.T) {
 	}
 }
 
+func TestStreamOpenAIUsageDetailsUseTerminalInputSnapshot(t *testing.T) {
+	sc := NewStreamConverter("openai")
+	events, _, eErr := feed(t, sc,
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"model\":\"minimax\",\"usage\":{\"input_tokens\":538,\"cache_read_input_tokens\":0}}}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":410,\"output_tokens\":6,\"cache_read_input_tokens\":128,\"cache_creation_input_tokens\":0}}\n\n",
+	)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	frames := dataFrames(t, events)
+	usage := frames[len(frames)-1]["usage"].(map[string]any)
+	if usage["prompt_tokens"] != float64(538) || usage["completion_tokens"] != float64(6) ||
+		usage["prompt_tokens_details"].(map[string]any)["cached_tokens"] != float64(128) {
+		t.Fatalf("usage = %v", usage)
+	}
+}
+
 func TestStreamOpenAIRoleFromFirstDelta(t *testing.T) {
 	sc := NewStreamConverter("openai")
 	events, _, eErr := feed(t, sc, "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")

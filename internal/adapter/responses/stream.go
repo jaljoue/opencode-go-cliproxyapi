@@ -153,6 +153,13 @@ func (t *toolCallTracker) bind(key string, st *toolCallState) {
 type usageCounts struct {
 	InputTokens  float64 `json:"input_tokens"`
 	OutputTokens float64 `json:"output_tokens"`
+	InputDetails *struct {
+		CachedTokens     *float64 `json:"cached_tokens"`
+		CacheWriteTokens *float64 `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
+	OutputDetails *struct {
+		ReasoningTokens *float64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type errorMessage struct {
@@ -314,8 +321,22 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 		if eErr := sc.checkTarget(); eErr != nil {
 			return nil, false, eErr
 		}
-		return sc.terminal(eventType == "response.incomplete",
-			int(ev.Response.Usage.InputTokens), int(ev.Response.Usage.OutputTokens))
+		details := shared.UsageDetails{}
+		if ev.Response.Usage.InputDetails != nil {
+			if ev.Response.Usage.InputDetails.CachedTokens != nil {
+				v := int64(*ev.Response.Usage.InputDetails.CachedTokens)
+				details.CachedTokens = &v
+			}
+			if ev.Response.Usage.InputDetails.CacheWriteTokens != nil {
+				v := int64(*ev.Response.Usage.InputDetails.CacheWriteTokens)
+				details.CacheWriteTokens = &v
+			}
+		}
+		if ev.Response.Usage.OutputDetails != nil && ev.Response.Usage.OutputDetails.ReasoningTokens != nil {
+			v := int64(*ev.Response.Usage.OutputDetails.ReasoningTokens)
+			details.ReasoningTokens = &v
+		}
+		return sc.terminal(eventType == "response.incomplete", int(ev.Response.Usage.InputTokens), int(ev.Response.Usage.OutputTokens), details)
 	case "response.failed", "error":
 		var ev failureEvent
 		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
@@ -468,7 +489,7 @@ func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *
 // pairing, message_delta (stop_sequence omitted entirely) and
 // message_stop. Shared precedence: tool calls outrank the status-derived
 // reason, so response.incomplete cannot downgrade them.
-func (sc *StreamConverter) terminal(incomplete bool, in, out int) ([][]byte, bool, *errclass.Error) {
+func (sc *StreamConverter) terminal(incomplete bool, in, out int, details shared.UsageDetails) ([][]byte, bool, *errclass.Error) {
 	st := "completed"
 	if incomplete {
 		st = "incomplete"
@@ -479,11 +500,12 @@ func (sc *StreamConverter) terminal(incomplete bool, in, out int) ([][]byte, boo
 		// chunk): typed clients prefer a stable schema, zero-valued fields
 		// when upstream reported none. Shared kernel keeps total_tokens
 		// consistent with the non-stream Chat Completions mapper.
-		chunk := sc.chatChunks().Finish(finish, shared.CCUsageFrom(int64(in), int64(out)))
+		chunk := sc.chatChunks().Finish(finish, shared.CCUsageFrom(int64(in), int64(out), details))
 		return [][]byte{chunk}, true, nil
 	}
 	statusStop := shared.ClaudeStopFromResponseStatus(st)
 	stop := shared.TerminalReason(sc.toolCallsSeen, "tool_use", statusStop)
+	cacheRead, cacheWrite := details.CachedTokens, details.CacheWriteTokens
 	em := sc.claudeChunks()
 	var events [][]byte
 	for _, idx := range sc.openBlocks {
@@ -491,7 +513,7 @@ func (sc *StreamConverter) terminal(incomplete bool, in, out int) ([][]byte, boo
 	}
 	sc.openBlocks = nil
 	events = append(events,
-		em.MessageDelta(&stop, map[string]any{"input_tokens": in, "output_tokens": out}),
+		em.MessageDelta(&stop, shared.ClaudeUsage(shared.ClampSubtract(int64(in), cacheRead, cacheWrite), int64(out), cacheRead, cacheWrite)),
 		em.MessageStop(),
 	)
 	return events, true, nil

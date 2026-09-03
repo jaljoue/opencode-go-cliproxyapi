@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -315,5 +316,27 @@ func TestConvertNonStreamResponsesLengthWithToolsIncomplete(t *testing.T) {
 		`{"id":"r1","model":"m","choices":[{"finish_reason":"length","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`)
 	if m["status"] != "incomplete" {
 		t.Fatalf("status = %v, want incomplete", m["status"])
+	}
+}
+
+func TestConvertChatUsageDetails(t *testing.T) {
+	body := []byte(`{"id":"r","model":"m","choices":[{"finish_reason":"stop","message":{"content":"x"}}],"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":8},"completion_tokens_details":{"reasoning_tokens":3}}}`)
+	for _, format := range []string{"claude", "openai-response"} {
+		out, eErr := ConvertNonStreamResponse(format, 200, body)
+		if eErr != nil {
+			t.Fatalf("%s: %v", format, eErr)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		u := m["usage"].(map[string]any)
+		if format == "claude" {
+			if u["input_tokens"] != float64(2) || u["cache_read_input_tokens"] != float64(8) {
+				t.Fatalf("claude usage = %v", u)
+			}
+		} else if u["input_tokens"] != float64(10) || u["input_tokens_details"].(map[string]any)["cached_tokens"] != float64(8) || u["output_tokens_details"].(map[string]any)["reasoning_tokens"] != float64(3) {
+			t.Fatalf("responses usage = %v", u)
+		}
 	}
 }

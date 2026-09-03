@@ -426,3 +426,24 @@ func TestConvertMessagesAggregatedTextVerbatim(t *testing.T) {
 		t.Fatalf("whitespace-only aggregated text not shipped verbatim: %s", out)
 	}
 }
+
+func TestConvertMessagesCacheUsageDetails(t *testing.T) {
+	body := `{"id":"m","model":"m","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}`
+	for _, format := range []string{"openai", "openai-response"} {
+		out, eErr := ConvertNonStreamResponse(format, 200, []byte(body))
+		if eErr != nil {
+			t.Fatalf("%s: %v", format, eErr)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(out, &m); err != nil {
+			t.Fatal(err)
+		}
+		u := m["usage"].(map[string]any)
+		if u["prompt_tokens"] != float64(8) && u["input_tokens"] != float64(8) {
+			t.Fatalf("%s input = %v", format, u)
+		}
+		if format == "openai-response" && (u["input_tokens_details"].(map[string]any)["cached_tokens"] != float64(3) || u["input_tokens_details"].(map[string]any)["cache_write_tokens"] != float64(1)) {
+			t.Fatalf("responses details = %v", u)
+		}
+	}
+}

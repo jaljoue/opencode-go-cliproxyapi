@@ -206,7 +206,7 @@ func TestChatChunkBuilderFrameShapes(t *testing.T) {
 		t.Fatalf("Delta = %q, want %q", got, want)
 	}
 
-	got, want = string(b.Finish("tool_calls", CCUsageFrom(10, 7))),
+	got, want = string(b.Finish("tool_calls", CCUsageFrom(10, 7, UsageDetails{}))),
 		`{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],`+envelope+
 			`,"usage":{"completion_tokens":7,"prompt_tokens":10,"total_tokens":17}}`
 	if got != want {
@@ -559,7 +559,7 @@ func TestTerminalReason(t *testing.T) {
 }
 
 func TestNewClaudeResult(t *testing.T) {
-	b, _ := json.Marshal(NewClaudeResult("r1", "m", "end_turn", 2, 3,
+	b, _ := json.Marshal(NewClaudeResult("r1", "m", "end_turn", 2, 3, nil, nil,
 		[]map[string]any{{"type": "text", "text": "x"}}))
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
@@ -580,7 +580,7 @@ func TestNewClaudeResult(t *testing.T) {
 
 	// Canonical omissions: nil content renders as [], and stop_sequence is
 	// never present (the stream message_delta sibling omits it entirely).
-	b, _ = json.Marshal(NewClaudeResult("r2", "m", "max_tokens", 0, 0, nil))
+	b, _ = json.Marshal(NewClaudeResult("r2", "m", "max_tokens", 0, 0, nil, nil, nil))
 	s := string(b)
 	if strings.Contains(s, `"content":null`) || strings.Contains(s, "stop_sequence") {
 		t.Fatalf("canonical omissions violated: %s", s)
@@ -752,7 +752,7 @@ func TestNewResponsesUsageFrom(t *testing.T) {
 		{0, 0, 0, 0, 0},
 		{5, 7, 5, 7, 12},
 	} {
-		got := NewResponsesUsageFrom(tc.in, tc.out)
+		got := NewResponsesUsageFrom(tc.in, tc.out, UsageDetails{})
 		if got.InputTokens != tc.wantIn || got.OutputTokens != tc.wantOut || got.TotalTokens != tc.wantTotal {
 			t.Errorf("NewResponsesUsageFrom(%d,%d) = %+v, want in=%d out=%d total=%d",
 				tc.in, tc.out, got, tc.wantIn, tc.wantOut, tc.wantTotal)
@@ -790,7 +790,7 @@ func TestSystemImageRejected(t *testing.T) {
 // Usage maps carry the protocol vocabulary with computed totals
 // (majority rule), including zero-token results.
 func TestUsageFrom(t *testing.T) {
-	got := CCUsageFrom(10, 3)
+	got := CCUsageFrom(10, 3, UsageDetails{})
 	want := map[string]any{"prompt_tokens": int64(10), "completion_tokens": int64(3), "total_tokens": int64(13)}
 	for k, v := range want {
 		if got[k] != v {
@@ -799,6 +799,25 @@ func TestUsageFrom(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Errorf("CCUsageFrom(10,3) has %d keys, want 3", len(got))
+	}
+}
+
+func TestUsageDetailsPreserveZeroAndClamp(t *testing.T) {
+	zero := int64(0)
+	read := int64(4)
+	write := int64(3)
+	reasoning := int64(0)
+	cc := CCUsageFrom(7, 5, UsageDetails{CachedTokens: &zero, ReasoningTokens: &reasoning})
+	if cc["prompt_tokens_details"].(map[string]any)["cached_tokens"] != int64(0) ||
+		cc["completion_tokens_details"].(map[string]any)["reasoning_tokens"] != int64(0) {
+		t.Fatalf("explicit zero details lost: %v", cc)
+	}
+	resp := NewResponsesUsageFrom(7, 5, UsageDetails{CachedTokens: &read, CacheWriteTokens: &write})
+	if resp.InputDetails == nil || *resp.InputDetails.CachedTokens != 4 || *resp.InputDetails.CacheWriteTokens != 3 || resp.TotalTokens != 12 {
+		t.Fatalf("responses details wrong: %+v", resp)
+	}
+	if got := ClampSubtract(2, &read, &write); got != 0 {
+		t.Fatalf("ClampSubtract = %d, want 0", got)
 	}
 }
 
@@ -904,7 +923,7 @@ func TestResponsesEventEmitter(t *testing.T) {
 		t.Fatalf("args delta = %v", ad)
 	}
 
-	done := ssePayload(t, e.Completed("completed", NewResponsesUsageFrom(2, 3), []any{}))
+	done := ssePayload(t, e.Completed("completed", NewResponsesUsageFrom(2, 3, UsageDetails{}), []any{}))
 	if done["type"] != "response.completed" {
 		t.Fatalf("completed type = %v", done["type"])
 	}

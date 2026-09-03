@@ -367,12 +367,16 @@ func (sc *StreamConverter) claudeTerminal() [][]byte {
 	// Always attach: sibling terminals never omit usage; fields zero when
 	// upstream reported none (F-R6).
 	input, output := int64(0), int64(0)
+	var cacheRead *int64
 	if sc.usage != nil {
 		input = sc.usage.PromptTokens
 		output = sc.usage.CompletionTokens
+		if sc.usage.PromptDetails != nil {
+			cacheRead = sc.usage.PromptDetails.CachedTokens
+		}
 	}
 	return [][]byte{sc.claudeEm.MessageDelta(&reason,
-		map[string]any{"input_tokens": input, "output_tokens": output})}
+		shared.ClaudeUsage(shared.ClampSubtract(input, cacheRead), output, cacheRead, nil))}
 }
 
 // stopText closes the open text content block, if any.
@@ -525,6 +529,15 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 		input = sc.usage.PromptTokens
 		outputTokens = sc.usage.CompletionTokens
 	}
-	usage := shared.NewResponsesUsageFrom(input, outputTokens)
+	var details shared.UsageDetails
+	if sc.usage != nil {
+		if sc.usage.PromptDetails != nil {
+			details.CachedTokens = sc.usage.PromptDetails.CachedTokens
+		}
+		if sc.usage.CompletionDetails != nil {
+			details.ReasoningTokens = sc.usage.CompletionDetails.ReasoningTokens
+		}
+	}
+	usage := shared.NewResponsesUsageFrom(input, outputTokens, details)
 	return [][]byte{sc.responsesEm().Completed(status, usage, oa.Render())}
 }

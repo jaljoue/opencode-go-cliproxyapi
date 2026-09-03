@@ -32,6 +32,13 @@ type respOutputItem struct {
 type respUsageIn struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+	InputDetails *struct {
+		CachedTokens     *int64 `json:"cached_tokens"`
+		CacheWriteTokens *int64 `json:"cache_write_tokens"`
+	} `json:"input_tokens_details"`
+	OutputDetails *struct {
+		ReasoningTokens *int64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type respResultIn struct {
@@ -150,7 +157,20 @@ func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 			"message":       msg,
 			"finish_reason": ccFinishFromStatus(resp.Status, sawToolCall),
 		}},
-		shared.CCUsageFrom(resp.Usage.InputTokens, resp.Usage.OutputTokens))
+		shared.CCUsageFrom(resp.Usage.InputTokens, resp.Usage.OutputTokens, shared.UsageDetails{
+			CachedTokens: func() *int64 {
+				if resp.Usage.InputDetails != nil {
+					return resp.Usage.InputDetails.CachedTokens
+				}
+				return nil
+			}(),
+			ReasoningTokens: func() *int64 {
+				if resp.Usage.OutputDetails != nil {
+					return resp.Usage.OutputDetails.ReasoningTokens
+				}
+				return nil
+			}(),
+		}))
 	b, _ := json.Marshal(out) // composed marshallable types only; cannot fail
 	return b, nil
 }
@@ -203,7 +223,13 @@ func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 	}
 	statusStop := shared.ClaudeStopFromResponseStatus(resp.Status)
 	stop := shared.TerminalReason(sawToolCall, "tool_use", statusStop)
+	var cacheRead, cacheWrite *int64
+	if resp.Usage.InputDetails != nil {
+		cacheRead = resp.Usage.InputDetails.CachedTokens
+		cacheWrite = resp.Usage.InputDetails.CacheWriteTokens
+	}
 	b, _ := json.Marshal(shared.NewClaudeResult(resp.ID, resp.Model, stop,
-		resp.Usage.InputTokens, resp.Usage.OutputTokens, blocks))
+		shared.ClampSubtract(resp.Usage.InputTokens, cacheRead, cacheWrite), resp.Usage.OutputTokens,
+		cacheRead, cacheWrite, blocks))
 	return b, nil // composed marshallable types only; cannot fail
 }

@@ -23,6 +23,12 @@ type ccChoice struct {
 type ccUsage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	PromptDetails    *struct {
+		CachedTokens *int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionDetails *struct {
+		ReasoningTokens *int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type ccResponse struct {
@@ -99,15 +105,19 @@ func chatToClaude(body []byte) ([]byte, *errclass.Error) {
 		return nil, eErr
 	}
 	var inputTokens, outputTokens int64
+	var cacheRead *int64
 	if resp.Usage != nil {
 		inputTokens, outputTokens = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
+		if resp.Usage.PromptDetails != nil {
+			cacheRead = resp.Usage.PromptDetails.CachedTokens
+		}
 	}
 	// Observed tool calls outrank the status-derived reason: a terminal
 	// length cannot downgrade tool_calls to max_tokens.
 	stop := shared.TerminalReason(len(choice.Message.ToolCalls) > 0,
 		"tool_use", shared.FinishToClaudeStop(choice.FinishReason))
 	b, _ := json.Marshal(shared.NewClaudeResult(resp.ID, resp.Model, stop,
-		inputTokens, outputTokens, append(blocks, toolUse...)))
+		shared.ClampSubtract(inputTokens, cacheRead), outputTokens, cacheRead, nil, append(blocks, toolUse...)))
 	return b, nil // only marshallable composed types; cannot fail
 }
 
@@ -183,7 +193,14 @@ func chatToResponses(body []byte) ([]byte, *errclass.Error) {
 	}
 	out.Output = oa.Render()
 	if resp.Usage != nil {
-		out.Usage = shared.NewResponsesUsageFrom(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		var details shared.UsageDetails
+		if resp.Usage.PromptDetails != nil {
+			details.CachedTokens = resp.Usage.PromptDetails.CachedTokens
+		}
+		if resp.Usage.CompletionDetails != nil {
+			details.ReasoningTokens = resp.Usage.CompletionDetails.ReasoningTokens
+		}
+		out.Usage = shared.NewResponsesUsageFrom(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, details)
 	}
 	b, _ := json.Marshal(out) // only marshallable composed types; cannot fail
 	return b, nil
