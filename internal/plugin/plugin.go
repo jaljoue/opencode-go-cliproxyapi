@@ -149,11 +149,12 @@ type lifecycleRequest struct {
 }
 
 type capabilities struct {
-	ModelProvider         bool     `json:"model_provider"`
-	AuthProvider          bool     `json:"auth_provider"`
-	Executor              bool     `json:"executor"`
-	ExecutorInputFormats  []string `json:"executor_input_formats,omitempty"`
-	ExecutorOutputFormats []string `json:"executor_output_formats,omitempty"`
+	ModelProvider         bool                         `json:"model_provider"`
+	AuthProvider          bool                         `json:"auth_provider"`
+	Executor              bool                         `json:"executor"`
+	ExecutorModelScope    pluginapi.ExecutorModelScope `json:"executor_model_scope,omitempty"`
+	ExecutorInputFormats  []string                     `json:"executor_input_formats,omitempty"`
+	ExecutorOutputFormats []string                     `json:"executor_output_formats,omitempty"`
 }
 
 type registrationResult struct {
@@ -177,6 +178,7 @@ func registrationEnvelope() []byte {
 			ModelProvider:         true,
 			AuthProvider:          true,
 			Executor:              true,
+			ExecutorModelScope:    pluginapi.ExecutorModelScopeOAuth,
 			ExecutorInputFormats:  formats,
 			ExecutorOutputFormats: formats,
 		},

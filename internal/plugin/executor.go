@@ -97,7 +97,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
 	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.rec.Protocol, url, len(res.cfg.APIKeys))
-	debugTrace("executor sending non-stream url=%s body=%s", url, string(upstreamBody))
+	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
 	defer cancel()
 	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{
@@ -110,7 +110,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		debugTrace("executor non-stream network error: %v", err)
 		return classEnvelope(errclass.FromNetwork(err)), nil
 	}
-	debugTrace("executor received non-stream status=%d body=%s", resp.StatusCode, string(resp.Body))
+	debugTrace("executor received non-stream status=%d body_len=%d", resp.StatusCode, len(resp.Body))
 	if resp.StatusCode >= 400 {
 		return classEnvelope(shared.UpstreamStatusError(resp.StatusCode, resp.Body)), nil
 	}
@@ -221,7 +221,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	}
 
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
-	debugTrace("executor sending stream url=%s body=%s", url, string(upstreamBody))
+	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
 	defer cancel()
 	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
@@ -282,7 +282,7 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 	)
 	for {
 		payload, readErrMsg, closed, err := m.bridge.StreamRead(upstreamID)
-		debugTrace("executor stream read chunk_len=%d closed=%t readErrMsg=%q err=%v payload=%s", len(payload), closed, readErrMsg, err, string(payload))
+		debugTrace("executor stream read chunk_len=%d closed=%t readErrMsg=%q err=%v", len(payload), closed, readErrMsg, err)
 		upstreamClosed = closed
 		if aborted.Load() {
 			closeStreams(errclass.Redact("stream exceeded request-timeout"))
