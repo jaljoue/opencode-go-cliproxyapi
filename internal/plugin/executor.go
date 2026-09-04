@@ -8,6 +8,8 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -90,6 +92,11 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if res == nil {
 		return failEnv, nil
 	}
+	sessionID, eErr := deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+	if eErr != nil {
+		return classEnvelope(eErr), nil
+	}
+	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
 	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
@@ -103,7 +110,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
-		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key),
+		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key, sessionID),
 		Body:    upstreamBody,
 	})
 	if err != nil {
@@ -137,12 +144,126 @@ func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat strin
 	return nil, errclass.Translation("unsupported route")
 }
 
-func upstreamAuthHeaders(route catalog.Route, key string) http.Header {
+func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header {
+	var h http.Header
 	if route == catalog.RouteMessages {
-		return messages.AuthHeaders(key)
+		h = messages.AuthHeaders(key)
+	} else {
+		// Chat Completions and Responses endpoints are OpenAI-style bearer.
+		h = chatcompletions.AuthHeaders(key)
 	}
-	// Chat Completions and Responses endpoints are OpenAI-style bearer.
-	return chatcompletions.AuthHeaders(key)
+	h.Set("x-opencode-session", sessionID)
+	return h
+}
+
+const emptyOpenCodeSessionID = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// deriveOpenCodeSessionID hashes the model-visible content of the initial user
+// turn before translation (FR-012/AC-H). Metadata is excluded;
+// valid requests without a user turn use the fixed empty-input digest.
+func deriveOpenCodeSessionID(sourceFormat string, originalRequest []byte) (string, *errclass.Error) {
+	var content strings.Builder
+	appendParts := func(raw json.RawMessage, target string) *errclass.Error {
+		parts, eErr := shared.DecodeStringOrParts(raw, target)
+		if eErr != nil {
+			return eErr
+		}
+		for _, part := range parts {
+			if part.ImageURL != "" {
+				content.WriteString(part.ImageURL)
+			} else {
+				content.WriteString(part.Text)
+			}
+		}
+		return nil
+	}
+
+	switch sourceFormat {
+	case "openai":
+		var req shared.ChatCompletionsRequest
+		if err := json.Unmarshal(originalRequest, &req); err != nil {
+			return "", errclass.Translation("malformed openai request JSON: " + err.Error())
+		}
+		started := false
+		for _, msg := range req.Messages {
+			if !started {
+				if msg.Role == "system" || msg.Role == "developer" {
+					continue
+				}
+				if msg.Role != "user" {
+					break
+				}
+				started = true
+			} else if msg.Role != "user" {
+				break
+			}
+			if eErr := appendParts(msg.Content, "/v1/chat/completions"); eErr != nil {
+				return "", eErr
+			}
+		}
+	case "claude":
+		req, eErr := shared.DecodeClaudeMessages(originalRequest)
+		if eErr != nil {
+			return "", eErr
+		}
+		started := false
+		for _, msg := range req.Messages {
+			if !started {
+				if msg.Role != "user" {
+					continue
+				}
+				started = true
+			} else if msg.Role != "user" {
+				break
+			}
+			if msg.Content != "" {
+				content.WriteString(msg.Content)
+			}
+			for _, block := range msg.Blocks {
+				switch block.Kind {
+				case "text":
+					content.WriteString(block.Text)
+				case "image":
+					content.WriteString(block.URL)
+				case "tool_result":
+					text, eErr := shared.ToolResultText(block.Result, "tool messages carry text only")
+					if eErr != nil {
+						return "", eErr
+					}
+					content.WriteString(text)
+				}
+			}
+		}
+	case "openai-response":
+		var req shared.ResponsesRequest
+		if err := json.Unmarshal(originalRequest, &req); err != nil {
+			return "", errclass.Translation("malformed openai-response request JSON: " + err.Error())
+		}
+		items, eErr := req.DecodeInputItems()
+		if eErr != nil {
+			return "", eErr
+		}
+		started := false
+		for _, item := range items {
+			isUserMessage := item.Role == "user" && (item.Type == "message" || item.Type == "")
+			if !started {
+				if !isUserMessage {
+					continue
+				}
+				started = true
+			} else if !isUserMessage {
+				break
+			}
+			if eErr := appendParts(item.Content, "/v1/responses"); eErr != nil {
+				return "", eErr
+			}
+		}
+	default:
+		return "", shared.UnsupportedFormat(sourceFormat, "OpenCode Go session derivation")
+	}
+
+	digest := sha256.Sum256([]byte(content.String()))
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // convertNonStream routes one upstream response to its adapter's uniform
@@ -215,6 +336,11 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if res == nil {
 		return failEnv, nil
 	}
+	sessionID, eErr := deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+	if eErr != nil {
+		return classEnvelope(eErr), nil
+	}
+	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
 	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
@@ -227,7 +353,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
-		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key),
+		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key, sessionID),
 		Body:    upstreamBody,
 	})
 	debugTrace("executor stream DoStream status=%d upstreamID=%s err=%v", st, id, err)

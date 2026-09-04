@@ -217,6 +217,128 @@ func execReqBodyWithKey(model, format string, body []byte, stream bool, key stri
 	return b
 }
 
+func assertSessionHeaders(t *testing.T, wire map[string]any, wantSession, wantAuth string) {
+	t.Helper()
+	headers, ok := wire["headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("headers missing: %v", wire)
+	}
+	if got := headers["X-Opencode-Session"].([]any)[0].(string); got != wantSession {
+		t.Fatalf("session = %q, want %q", got, wantSession)
+	}
+	if got := headers["Authorization"]; wantAuth != "" {
+		if got.([]any)[0].(string) != wantAuth {
+			t.Fatalf("Authorization = %v, want %q", got, wantAuth)
+		}
+	} else if got, ok := headers["X-Api-Key"]; !ok || got.([]any)[0].(string) != testKey {
+		t.Fatalf("x-api-key missing: %v", headers)
+	}
+	for _, forbidden := range []string{"X-Opencode-Client", "X-Opencode-Request", "X-Opencode-Project", "User-Agent"} {
+		if _, ok := headers[forbidden]; ok {
+			t.Fatalf("forbidden header %q present: %v", forbidden, headers)
+		}
+	}
+}
+
+func TestExecutorSessionHeaderMatrix(t *testing.T) {
+	// AC-H: every source format reaches every route in both
+	// execution modes with the same opaque digest and route authentication.
+	formats := []struct {
+		name string
+		body []byte
+	}{
+		{"openai", []byte(`{"model":"x","messages":[{"role":"user","content":"matrix"}]}`)},
+		{"claude", []byte(`{"model":"x","max_tokens":16,"messages":[{"role":"user","content":"matrix"}]}`)},
+		{"openai-response", []byte(`{"model":"x","input":"matrix"}`)},
+	}
+	routes := []struct {
+		name  string
+		model string
+		auth  string
+	}{
+		{"chat", "opencode-go/glm-5.3", "Bearer " + testKey},
+		{"messages", "opencode-go/minimax-m3", ""},
+		{"responses", "opencode-go/gpt-5.6-luna", "Bearer " + testKey},
+	}
+	const wantSession = "6e00cd562cc2d88e238dfb81d9439de7ec843ee9d0c9879d549cb1436786f975"
+	for _, mode := range []string{"non-stream", "stream"} {
+		for _, format := range formats {
+			for _, route := range routes {
+				t.Run(mode+"/"+format.name+"/"+route.name, func(t *testing.T) {
+					var f *fakeCaller
+					var m *Manager
+					if mode == "non-stream" {
+						m, f = newExecManager(t)
+						resp, err := m.HandleCall("executor.execute", execReqBody(route.model, format.name, format.body, false))
+						if err != nil || !decodeEnv(t, resp).OK {
+							t.Fatalf("execute: %v %s", err, resp)
+						}
+						assertSessionHeaders(t, lastWire(t, f, pluginabi.MethodHostHTTPDo), wantSession, route.auth)
+					} else {
+						m, f = newStreamManager(t, streamScript{upstreamID: "matrix-up"})
+						resp, err := m.HandleCall("executor.execute_stream", execStreamReqBody(route.model, format.name, format.body, "matrix-down"))
+						if err != nil || !decodeEnv(t, resp).OK {
+							t.Fatalf("execute_stream: %v %s", err, resp)
+						}
+						calls := f.callsOf(pluginabi.MethodHostHTTPDoStream)
+						if len(calls) != 1 {
+							t.Fatalf("do_stream calls = %d, want 1", len(calls))
+						}
+						assertSessionHeaders(t, decodePayload(t, calls[0]), wantSession, route.auth)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestExecutorSessionFallbackAndMalformedInput(t *testing.T) {
+	t.Run("no user is forwarded in both modes", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"assistant","content":"prefill"}]}`)
+
+		m, f := newExecManager(t)
+		if env := mustExecute(t, m, "opencode-go/glm-5.3", "openai", body); !env.OK {
+			t.Fatalf("non-stream envelope = %+v", env.Error)
+		}
+		assertSessionHeaders(t, lastWire(t, f, pluginabi.MethodHostHTTPDo), emptyOpenCodeSessionID, "Bearer "+testKey)
+
+		m, f = newStreamManager(t, streamScript{upstreamID: "fallback-up"})
+		resp, err := m.HandleCall("executor.execute_stream", execStreamReqBody("opencode-go/glm-5.3", "openai", body, "fallback-down"))
+		if err != nil || !decodeEnv(t, resp).OK {
+			t.Fatalf("stream envelope = %v %s", err, resp)
+		}
+		calls := f.callsOf(pluginabi.MethodHostHTTPDoStream)
+		if len(calls) != 1 {
+			t.Fatalf("do_stream calls = %d, want 1", len(calls))
+		}
+		assertSessionHeaders(t, decodePayload(t, calls[0]), emptyOpenCodeSessionID, "Bearer "+testKey)
+	})
+
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream]+" malformed original request", func(t *testing.T) {
+			m, f := newExecManager(t)
+			beforeDo, beforeStream := len(f.callsOf(pluginabi.MethodHostHTTPDo)), len(f.callsOf(pluginabi.MethodHostHTTPDoStream))
+			var resp []byte
+			var err error
+			if stream {
+				resp, err = m.HandleCall("executor.execute_stream", execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(`{"messages":`), "bad-down"))
+			} else {
+				resp, err = m.HandleCall("executor.execute", execReqBody("opencode-go/glm-5.3", "openai", []byte(`{"messages":`), false))
+			}
+			if err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			env := decodeEnv(t, resp)
+			if env.OK || env.Error == nil || env.Error.Code != string(errclass.ClassTranslation) {
+				t.Fatalf("envelope = %s", resp)
+			}
+			if len(f.callsOf(pluginabi.MethodHostHTTPDo)) != beforeDo || len(f.callsOf(pluginabi.MethodHostHTTPDoStream)) != beforeStream {
+				t.Fatalf("malformed request made inference callback: do=%d/%d stream=%d/%d", len(f.callsOf(pluginabi.MethodHostHTTPDo)), beforeDo, len(f.callsOf(pluginabi.MethodHostHTTPDoStream)), beforeStream)
+			}
+		})
+	}
+}
+
 func TestExecuteChatRoute(t *testing.T) {
 	f := &fakeCaller{responder: wrapWithCatalog(testCatalogJSON, upstreamRouter(t, map[string]string{
 		"/v1/chat/completions": ccResponseBody,
@@ -249,6 +371,9 @@ func TestExecuteChatRoute(t *testing.T) {
 	headers := wire["headers"].(map[string]any)
 	if headers["Authorization"].([]any)[0].(string) != "Bearer "+testKey {
 		t.Fatalf("auth header wrong: %v", headers)
+	}
+	if headers["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("session header wrong: %v", headers)
 	}
 	var upstream map[string]any
 	if err := json.Unmarshal(wireBody(t, wire, "body"), &upstream); err != nil {
@@ -304,6 +429,9 @@ func TestExecuteMessagesRouteNativeClaudePassesThrough(t *testing.T) {
 	}
 	if headers["Anthropic-Version"].([]any)[0].(string) == "" {
 		t.Fatalf("Anthropic-Version missing: %v", headers)
+	}
+	if headers["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("session header wrong: %v", headers)
 	}
 	if _, has := headers["Authorization"]; has {
 		t.Fatalf("messages route must not send Bearer header: %v", headers)
@@ -361,6 +489,9 @@ func TestExecuteResponsesRouteNativePassesThrough(t *testing.T) {
 	headers := wire["headers"].(map[string]any)
 	if headers["Authorization"].([]any)[0].(string) != "Bearer "+testKey {
 		t.Fatalf("bearer missing: %v", headers)
+	}
+	if headers["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("session header wrong: %v", headers)
 	}
 }
 
@@ -437,6 +568,11 @@ func TestExecuteStreamHappyPathClaudeSource(t *testing.T) {
 	env := decodeEnv(t, resp)
 	if !env.OK || string(env.Result) != "{}" {
 		t.Fatalf("envelope = %s", resp)
+	}
+	streamWire := decodePayload(t, f.callsOf(pluginabi.MethodHostHTTPDoStream)[0])
+	streamHeaders := streamWire["headers"].(map[string]any)
+	if streamHeaders["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("stream session header wrong: %v", streamHeaders)
 	}
 	m.bridge.WaitForInFlight(5 * time.Second)
 
@@ -521,6 +657,11 @@ func TestExecuteStreamCloseAfterFinishFlushesTerminal(t *testing.T) {
 	env := decodeEnv(t, resp)
 	if !env.OK {
 		t.Fatalf("envelope = %+v", env.Error)
+	}
+	streamWire := decodePayload(t, f.callsOf(pluginabi.MethodHostHTTPDoStream)[0])
+	streamHeaders := streamWire["headers"].(map[string]any)
+	if streamHeaders["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("stream session header wrong: %v", streamHeaders)
 	}
 	m.bridge.WaitForInFlight(5 * time.Second)
 	var blob strings.Builder
@@ -672,6 +813,11 @@ func TestExecuteStreamResponsesRouteNative(t *testing.T) {
 	env := decodeEnv(t, resp)
 	if !env.OK || string(env.Result) != "{}" {
 		t.Fatalf("envelope = %s", resp)
+	}
+	streamWire := decodePayload(t, f.callsOf(pluginabi.MethodHostHTTPDoStream)[0])
+	streamHeaders := streamWire["headers"].(map[string]any)
+	if streamHeaders["X-Opencode-Session"].([]any)[0].(string) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("stream session header wrong: %v", streamHeaders)
 	}
 	m.bridge.WaitForInFlight(5 * time.Second)
 	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamClose)); got != 1 {
@@ -1131,7 +1277,7 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 	if got := catalog.JoinUpstreamURL("https://gw.test/", "/v1/responses"); got != "https://gw.test/responses" {
 		t.Fatalf("url join = %q", got)
 	}
-	if got := upstreamAuthHeaders(catalog.RouteChatCompletions, "k"); got.Get("Authorization") != "Bearer k" {
+	if got := upstreamAuthHeaders(catalog.RouteChatCompletions, "k", "session"); got.Get("Authorization") != "Bearer k" || got.Get("x-opencode-session") != "session" {
 		t.Fatalf("bearer headers = %v", got)
 	}
 	// Adapters own status classification uniformly (§7).

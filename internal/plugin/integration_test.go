@@ -206,23 +206,26 @@ func writeSSE(w http.ResponseWriter, frames []string) {
 // mockOpenCode is a stand-in OpenCode Go server with mutable outage state,
 // swappable catalog / messages payloads, and a scriptable chat endpoint.
 type mockOpenCode struct {
-	mu                  sync.Mutex
-	srv                 *httptest.Server
-	catalogDown         bool
-	catalogBody         string
-	messagesBody        string
-	responsesBody       string
-	lastPath            string
-	lastAuth            string
-	lastChatBody        []byte
-	lastMessagesAuth    string
-	lastMessagesVersion string
-	lastMessagesBody    []byte
-	lastResponsesAuth   string
-	lastResponsesBody   []byte
-	chatHits            int
-	chatPlan            func(hit int) (status int, retryAfter string, body string)
-	authSeen            []string
+	mu                   sync.Mutex
+	srv                  *httptest.Server
+	catalogDown          bool
+	catalogBody          string
+	messagesBody         string
+	responsesBody        string
+	lastPath             string
+	lastAuth             string
+	lastChatSession      string
+	lastChatBody         []byte
+	lastMessagesAuth     string
+	lastMessagesVersion  string
+	lastMessagesSession  string
+	lastMessagesBody     []byte
+	lastResponsesAuth    string
+	lastResponsesSession string
+	lastResponsesBody    []byte
+	chatHits             int
+	chatPlan             func(hit int) (status int, retryAfter string, body string)
+	authSeen             []string
 }
 
 func newMockOpenCode(t *testing.T) *mockOpenCode {
@@ -247,6 +250,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		st.mu.Lock()
 		st.lastPath = r.URL.Path
 		st.lastAuth = r.Header.Get("Authorization")
+		st.lastChatSession = r.Header.Get("x-opencode-session")
 		st.lastChatBody = body
 		st.authSeen = append(st.authSeen, r.Header.Get("Authorization"))
 		st.chatHits++
@@ -274,6 +278,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		st.mu.Lock()
 		st.lastMessagesAuth = r.Header.Get("x-api-key")
 		st.lastMessagesVersion = r.Header.Get("Anthropic-Version")
+		st.lastMessagesSession = r.Header.Get("x-opencode-session")
 		st.lastMessagesBody = body
 		st.mu.Unlock()
 		if stream, _ := parsed["stream"].(bool); stream {
@@ -291,6 +296,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		st.mu.Lock()
 		st.lastMessagesAuth = r.Header.Get("x-api-key")
 		st.lastMessagesVersion = r.Header.Get("Anthropic-Version")
+		st.lastMessagesSession = r.Header.Get("x-opencode-session")
 		st.lastMessagesBody = body
 		st.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -302,6 +308,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		_ = json.Unmarshal(body, &parsed)
 		st.mu.Lock()
 		st.lastResponsesAuth = r.Header.Get("Authorization")
+		st.lastResponsesSession = r.Header.Get("x-opencode-session")
 		st.lastResponsesBody = body
 		st.mu.Unlock()
 		if stream, _ := parsed["stream"].(bool); stream {
@@ -419,7 +426,7 @@ func integrationStaticIDs(t *testing.T, m *Manager) map[string]pluginapi.ModelIn
 // through the compatibility table, stable prefixed public IDs with intact
 // upstream mapping, schema_version 3, model_provider+executor capabilities.
 func TestRegisterAndDiscover(t *testing.T) {
-	m, _, _, _ := newIntegrationManager(t)
+	m, f, _, _ := newIntegrationManager(t)
 
 	var reg registrationResult
 	decodeResult(t, mustHandle(t, m, "plugin.register", lifecycleRequestBody(integrationYAML("http://unused.invalid"))), &reg)
@@ -440,8 +447,34 @@ func TestRegisterAndDiscover(t *testing.T) {
 			t.Fatalf("missing public id %q in %v", id, byID)
 		}
 	}
+	for _, c := range f.callsOf(pluginabi.MethodHostHTTPDo) {
+		var wire struct {
+			URL     string      `json:"url"`
+			Headers http.Header `json:"headers"`
+		}
+		if err := json.Unmarshal(c.payload, &wire); err != nil {
+			t.Fatalf("catalog callback payload: %v", err)
+		}
+		if strings.HasSuffix(wire.URL, "/models") && wire.Headers.Get("x-opencode-session") != "" {
+			t.Fatalf("catalog /models request must not include x-opencode-session: %v", wire.Headers)
+		}
+	}
 	if byID["opencode-go/glm-5.2"].DisplayName != "glm-5.2" {
 		t.Fatalf("glm display name = %q, want model ID", byID["opencode-go/glm-5.2"].DisplayName)
+	}
+}
+
+func TestSessionPromptMarkerNotCapturedInLogs(t *testing.T) {
+	m, f, _, _ := newIntegrationManager(t)
+	const marker = "unique-session-prompt-marker-7f4c"
+	env := mustExecute(t, m, "opencode-go/glm-5.2", "openai", []byte(`{"model":"opencode-go/glm-5.2","messages":[{"role":"user","content":"`+marker+`"}]}`))
+	if !env.OK {
+		t.Fatalf("execute envelope = %+v", env.Error)
+	}
+	for _, c := range f.callsOf(pluginabi.MethodHostLog) {
+		if strings.Contains(string(c.payload), marker) {
+			t.Fatalf("host.log captured raw prompt marker: %s", c.payload)
+		}
 	}
 }
 
@@ -465,6 +498,12 @@ func TestChatNonStreamRoundTrip(t *testing.T) {
 	}
 	if auth != "Bearer sk-test-1" {
 		t.Fatalf("mock Authorization = %q", auth)
+	}
+	st.mu.Lock()
+	chatSession := st.lastChatSession
+	st.mu.Unlock()
+	if chatSession != "8fa02f28ce729c164657f5ab84cd1e38f690981132765ab45c6a71aeeb3dacd1" {
+		t.Fatalf("mock x-opencode-session = %q", chatSession)
 	}
 	if upstream["model"] != "glm-5.2" {
 		t.Fatalf("upstream model = %v, want bare glm-5.2", upstream["model"])
@@ -587,13 +626,16 @@ func TestMessagesNonStreamRoundTrip(t *testing.T) {
 	}
 
 	st.mu.Lock()
-	auth, version, raw := st.lastMessagesAuth, st.lastMessagesVersion, st.lastMessagesBody
+	auth, version, session, raw := st.lastMessagesAuth, st.lastMessagesVersion, st.lastMessagesSession, st.lastMessagesBody
 	st.mu.Unlock()
 	if auth != "sk-test-1" {
 		t.Fatalf("mock x-api-key = %q", auth)
 	}
 	if version == "" {
 		t.Fatal("anthropic-version header missing")
+	}
+	if session != "115ff558a2b5fa032b29f2f452673404575e82417d2843e0f410e890c3e85efa" {
+		t.Fatalf("mock x-opencode-session = %q", session)
 	}
 	var upstream map[string]any
 	if err := json.Unmarshal(raw, &upstream); err != nil {
@@ -651,10 +693,13 @@ func TestResponsesNonStreamRoundTrip(t *testing.T) {
 	}
 
 	st.mu.Lock()
-	auth, raw := st.lastResponsesAuth, st.lastResponsesBody
+	auth, session, raw := st.lastResponsesAuth, st.lastResponsesSession, st.lastResponsesBody
 	st.mu.Unlock()
 	if auth != "Bearer sk-test-1" {
 		t.Fatalf("mock Authorization = %q", auth)
+	}
+	if session != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("mock x-opencode-session = %q", session)
 	}
 	var upstream map[string]any
 	if err := json.Unmarshal(raw, &upstream); err != nil {
@@ -725,9 +770,13 @@ func TestChatStreamingRoundTrip(t *testing.T) {
 
 	st.mu.Lock()
 	sawStream := strings.Contains(string(st.lastChatBody), `"stream":true`)
+	session := st.lastChatSession
 	st.mu.Unlock()
 	if !sawStream {
 		t.Fatal("mock did not see stream:true")
+	}
+	if session != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("mock x-opencode-session = %q", session)
 	}
 
 	events := emittedEvents(t, f)
@@ -765,9 +814,13 @@ func TestMessagesStreamingRoundTrip(t *testing.T) {
 	m.bridge.WaitForInFlight(5 * time.Second)
 	st.mu.Lock()
 	sawStream := strings.Contains(string(st.lastMessagesBody), `"stream":true`)
+	session := st.lastMessagesSession
 	st.mu.Unlock()
 	if !sawStream {
 		t.Fatal("mock did not see stream:true")
+	}
+	if session != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("mock x-opencode-session = %q", session)
 	}
 
 	events := emittedEvents(t, f)
@@ -796,9 +849,13 @@ func TestResponsesStreamingRoundTrip(t *testing.T) {
 	m.bridge.WaitForInFlight(5 * time.Second)
 	st.mu.Lock()
 	sawStream := strings.Contains(string(st.lastResponsesBody), `"stream":true`)
+	session := st.lastResponsesSession
 	st.mu.Unlock()
 	if !sawStream {
 		t.Fatal("mock did not see stream:true")
+	}
+	if session != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+		t.Fatalf("mock x-opencode-session = %q", session)
 	}
 
 	events := emittedEvents(t, f)
