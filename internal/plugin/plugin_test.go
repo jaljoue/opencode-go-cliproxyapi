@@ -497,6 +497,7 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 		var record struct {
 			Type   string `json:"type"`
 			ID     string `json:"id"`
+			Label  string `json:"label"`
 			APIKey string `json:"api_key"`
 		}
 		if err := json.Unmarshal(wire.JSON, &record); err != nil {
@@ -504,7 +505,7 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 		}
 		hash := sha256.Sum256([]byte(record.APIKey))
 		wantHash := hex.EncodeToString(hash[:])
-		if record.Type != ProviderID || record.ID != "opencode-go-key-"+wantHash || wire.Name != record.ID+".json" {
+		if record.Type != ProviderID || record.ID != "opencode-go-key-"+wantHash || record.Label != "OpenCode Go credential "+wantHash || wire.Name != record.ID+".json" {
 			t.Fatalf("record identity = %+v name=%q", record, wire.Name)
 		}
 		if record.APIKey == "" || strings.Contains(wire.Name, record.APIKey) || strings.Contains(record.ID, record.APIKey) {
