@@ -1,8 +1,42 @@
 package plugin
 
 import (
+	"net/http"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestResolveOpenCodeSessionIDPrecedence(t *testing.T) {
+	const fallbackBody = `{"messages":[{"role":"user","content":"fallback"}]}`
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		headers  http.Header
+		want     string
+	}{
+		{name: "canonical wins", metadata: map[string]any{"canonical_session_id": "canonical"}, headers: http.Header{"X-Session-Affinity": []string{"header"}}, want: "canonical"},
+		{name: "headers use documented order", headers: http.Header{"X-Session-Affinity": []string{"affinity"}, "X-Opencode-Session": []string{"opencode"}}, want: "affinity"},
+		{name: "empty earlier header is skipped", headers: http.Header{"X-Session-Affinity": []string{""}, "X-Opencode-Session": []string{"opencode"}}, want: "opencode"},
+		{name: "opaque values are preserved", headers: http.Header{"X-Session-Id": []string{"  opaque\tvalue  "}}, want: "  opaque\tvalue  "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := executorRequest{ExecutorRequest: pluginapi.ExecutorRequest{Metadata: tc.metadata, Headers: tc.headers, SourceFormat: "openai", OriginalRequest: []byte(fallbackBody)}}
+			got, eErr := resolveOpenCodeSessionID(req)
+			if eErr != nil || got != tc.want {
+				t.Fatalf("session = %q, error = %v, want %q", got, eErr, tc.want)
+			}
+		})
+	}
+
+	req := executorRequest{ExecutorRequest: pluginapi.ExecutorRequest{SourceFormat: "openai", OriginalRequest: []byte(fallbackBody)}}
+	got, eErr := resolveOpenCodeSessionID(req)
+	want, wantErr := deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+	if eErr != wantErr || got != want {
+		t.Fatalf("fallback session = %q, error = %v, want %q, error %v", got, eErr, want, wantErr)
+	}
+}
 
 func TestDeriveOpenCodeSessionID(t *testing.T) {
 	tests := []struct {

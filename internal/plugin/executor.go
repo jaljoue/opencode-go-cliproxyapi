@@ -92,7 +92,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if res == nil {
 		return failEnv, nil
 	}
-	sessionID, eErr := deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+	sessionID, eErr := resolveOpenCodeSessionID(req)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -157,6 +157,26 @@ func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header
 }
 
 const emptyOpenCodeSessionID = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// resolveOpenCodeSessionID applies the FR-012/AC-H precedence: CPA's canonical
+// identity, an explicit inbound session header, then the existing content hash.
+func resolveOpenCodeSessionID(req executorRequest) (string, *errclass.Error) {
+	if sid, ok := req.Metadata["canonical_session_id"].(string); ok && sid != "" {
+		return sid, nil
+	}
+	for _, name := range []string{
+		"X-Session-Affinity",
+		"X-Opencode-Session",
+		"X-Session-Id",
+		"X-Claude-Code-Session-Id",
+		"Session-Id",
+	} {
+		if sid := req.Headers.Get(name); sid != "" {
+			return sid, nil
+		}
+	}
+	return deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+}
 
 // deriveOpenCodeSessionID hashes the model-visible content of the initial user
 // turn before translation (FR-012/AC-H). Metadata is excluded;
@@ -336,7 +356,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if res == nil {
 		return failEnv, nil
 	}
-	sessionID, eErr := deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
+	sessionID, eErr := resolveOpenCodeSessionID(req)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}

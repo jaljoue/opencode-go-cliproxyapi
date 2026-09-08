@@ -217,6 +217,16 @@ func execReqBodyWithKey(model, format string, body []byte, stream bool, key stri
 	return b
 }
 
+func execReqBodyWithSessionInputs(model, format string, body []byte, stream bool, key, canonical, header string) []byte {
+	b, _ := json.Marshal(executorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		AuthProvider: ProviderID, AuthAttributes: map[string]string{"api_key": key},
+		Model: model, SourceFormat: format, OriginalRequest: body, Stream: stream,
+		Metadata: map[string]any{"canonical_session_id": canonical},
+		Headers:  http.Header{"X-Claude-Code-Session-Id": []string{header}},
+	}})
+	return b
+}
+
 func assertSessionHeaders(t *testing.T, wire map[string]any, wantSession, wantAuth string) {
 	t.Helper()
 	headers, ok := wire["headers"].(map[string]any)
@@ -337,6 +347,28 @@ func TestExecutorSessionFallbackAndMalformedInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecutorSessionInputsPropagateInBothModes(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"session"}]}`)
+
+	m, f := newExecManager(t)
+	resp, err := m.HandleCall("executor.execute", execReqBodyWithSessionInputs("opencode-go/glm-5.3", "openai", body, false, testKey, "canonical-non-stream", "header-non-stream"))
+	if err != nil || !decodeEnv(t, resp).OK {
+		t.Fatalf("non-stream execute: %v %s", err, resp)
+	}
+	assertSessionHeaders(t, lastWire(t, f, pluginabi.MethodHostHTTPDo), "canonical-non-stream", "Bearer "+testKey)
+
+	m, f = newStreamManager(t, streamScript{upstreamID: "session-up"})
+	resp, err = m.HandleCall("executor.execute_stream", execReqBodyWithSessionInputs("opencode-go/glm-5.3", "openai", body, true, testKey, "", "header-stream"))
+	if err != nil || !decodeEnv(t, resp).OK {
+		t.Fatalf("stream execute: %v %s", err, resp)
+	}
+	calls := f.callsOf(pluginabi.MethodHostHTTPDoStream)
+	if len(calls) != 1 {
+		t.Fatalf("do_stream calls = %d, want 1", len(calls))
+	}
+	assertSessionHeaders(t, decodePayload(t, calls[0]), "header-stream", "Bearer "+testKey)
 }
 
 func TestExecuteChatRoute(t *testing.T) {

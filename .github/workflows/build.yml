@@ -255,6 +255,9 @@ jobs:
       - build-freebsd
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -275,5 +278,5 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
               --title "${GITHUB_REF_NAME}" \
-              --generate-notes
+              --notes-file RELEASE_NOTES.md
           fi
