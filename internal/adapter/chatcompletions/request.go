@@ -38,7 +38,7 @@ func AuthHeaders(key string) http.Header {
 func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai":
-		return shared.RewriteModelID(upstreamModel, sourceBody, "openai")
+		return buildOpenAIRequest(upstreamModel, sourceBody)
 	case "claude":
 		return claudeToChat(upstreamModel, sourceBody, ts)
 	case "openai-response":
@@ -46,6 +46,50 @@ func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *plu
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
+}
+
+// buildOpenAIRequest rewrites the top-level model field of an OpenAI request
+// body to upstreamModel and strips any malformed top-level thinking object.
+// DeepSeek models fail if thinking lacks a valid string type field.
+func buildOpenAIRequest(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, errclass.Translation("malformed openai request JSON: " + err.Error())
+	}
+	if req == nil {
+		return nil, errclass.Translation("malformed request body: JSON null is not a valid request")
+	}
+	rawThinking, hasThinking := req["thinking"]
+	validThinking := hasThinking && isValidThinking(rawThinking)
+	if hasThinking && !validThinking {
+		delete(req, "thinking")
+	}
+	if raw, ok := req["model"]; ok && string(raw) == `"`+upstreamModel+`"` && (validThinking || !hasThinking) {
+		return body, nil
+	}
+	req["model"] = json.RawMessage(`"` + upstreamModel + `"`)
+	b, err := json.Marshal(req)
+	if err != nil {
+		return nil, errclass.Translation("model id cannot be represented as JSON")
+	}
+	return b, nil
+}
+
+// isValidThinking reports whether raw is a JSON object with a non-empty string "type" field.
+func isValidThinking(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return false
+	}
+	rawType, ok := obj["type"]
+	if !ok {
+		return false
+	}
+	var typeStr string
+	if err := json.Unmarshal(rawType, &typeStr); err != nil {
+		return false
+	}
+	return strings.TrimSpace(typeStr) != ""
 }
 
 type imageURLField struct {

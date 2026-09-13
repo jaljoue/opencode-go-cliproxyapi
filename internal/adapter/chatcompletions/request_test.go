@@ -58,6 +58,169 @@ func TestBuildRequestOpenAI(t *testing.T) {
 	}
 }
 
+func TestBuildRequest_OpenAISanitizeThinking(t *testing.T) {
+	t.Run("untyped thinking metadata stripped", func(t *testing.T) {
+		body := `{"model":"other","thinking":{"levels":["low","high","max"]},"messages":[{"role":"user","content":"hi"}],"stream":true}`
+		out, eErr := BuildRequest("m", "openai", []byte(body), nil)
+		m := decodeOut(t, out, eErr)
+		if _, ok := m["thinking"]; ok {
+			t.Fatalf("thinking should be stripped: %v", m)
+		}
+		if m["model"] != "m" || m["stream"] != true {
+			t.Fatalf("expected fields missing or wrong: %v", m)
+		}
+		msgs, ok := m["messages"].([]any)
+		if !ok || len(msgs) != 1 {
+			t.Fatalf("messages altered: %v", m["messages"])
+		}
+
+		bodySameModel := `{"model":"m","thinking":{"levels":["low","high","max"]},"stream":true}`
+		outSame, eErrSame := BuildRequest("m", "openai", []byte(bodySameModel), nil)
+		mSame := decodeOut(t, outSame, eErrSame)
+		if _, ok := mSame["thinking"]; ok {
+			t.Fatalf("thinking should be stripped even if model matches: %v", mSame)
+		}
+		if mSame["model"] != "m" || mSame["stream"] != true {
+			t.Fatalf("fields corrupted: %v", mSame)
+		}
+	})
+
+	t.Run("non-object or malformed thinking stripped", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			thinking string
+		}{
+			{"string fast", `"fast"`},
+			{"number 123", `123`},
+			{"array low", `["low"]`},
+			{"boolean true", `true`},
+			{"null value", `null`},
+			{"type is number", `{"type": 123}`},
+			{"type is null", `{"type": null}`},
+			{"type is array", `{"type": ["enabled"]}`},
+			{"type is empty string", `{"type": ""}`},
+			{"type is whitespace", `{"type": "   "}`},
+			{"empty object", `{}`},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				body := fmt.Sprintf(`{"model":"other","thinking":%s,"stream":true}`, tc.thinking)
+				out, eErr := BuildRequest("m", "openai", []byte(body), nil)
+				m := decodeOut(t, out, eErr)
+				if _, ok := m["thinking"]; ok {
+					t.Fatalf("%s: thinking should be stripped, got %v", tc.name, m["thinking"])
+				}
+				if m["model"] != "m" || m["stream"] != true {
+					t.Fatalf("%s: fields altered: %v", tc.name, m)
+				}
+			})
+		}
+	})
+
+	t.Run("valid thinking object preserved", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			model    string
+			thinking string
+		}{
+			{"enabled with budget model rewrite", "old-model", `{"type":"enabled","budget_tokens":1024}`},
+			{"enabled with budget same model", "m", `{"type":"enabled","budget_tokens":1024}`},
+			{"disabled same model", "m", `{"type":"disabled"}`},
+			{"disabled model rewrite", "old-model", `{"type":"disabled"}`},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				body := fmt.Sprintf(`{"model":%q,"thinking":%s,"stream":true}`, tc.model, tc.thinking)
+				out, eErr := BuildRequest("m", "openai", []byte(body), nil)
+				if eErr != nil {
+					t.Fatalf("unexpected error: %v", eErr)
+				}
+				if tc.model == "m" && string(out) != body {
+					t.Fatalf("expected raw body passthrough, got: %s", string(out))
+				}
+				m := decodeOut(t, out, eErr)
+				if m["model"] != "m" {
+					t.Fatalf("model = %v, want m", m["model"])
+				}
+				th, ok := m["thinking"].(map[string]any)
+				if !ok {
+					t.Fatalf("thinking missing or not object: %v", m["thinking"])
+				}
+				if strings.Contains(tc.name, "enabled") {
+					if th["type"] != "enabled" || th["budget_tokens"] != float64(1024) {
+						t.Fatalf("thinking object content corrupted: %v", th)
+					}
+				} else {
+					if th["type"] != "disabled" {
+						t.Fatalf("thinking object content corrupted: %v", th)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("reasoning_effort preserved without thinking", func(t *testing.T) {
+		body := `{"model":"old-model","reasoning_effort":"high","messages":[{"role":"user","content":"hello"}]}`
+		out, eErr := BuildRequest("m", "openai", []byte(body), nil)
+		m := decodeOut(t, out, eErr)
+		if m["model"] != "m" {
+			t.Fatalf("model = %v, want m", m["model"])
+		}
+		if m["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %v, want high", m["reasoning_effort"])
+		}
+		if _, ok := m["thinking"]; ok {
+			t.Fatalf("thinking should not be present: %v", m)
+		}
+
+		bodySame := `{"model":"m","reasoning_effort":"high"}`
+		outSame, eErrSame := BuildRequest("m", "openai", []byte(bodySame), nil)
+		if eErrSame != nil {
+			t.Fatalf("unexpected error: %v", eErrSame)
+		}
+		if string(outSame) != bodySame {
+			t.Fatalf("expected raw body passthrough, got: %s", string(outSame))
+		}
+	})
+
+	t.Run("clean model rewrite without thinking", func(t *testing.T) {
+		body := `{"model":"old-model","temperature":0.7}`
+		out, eErr := BuildRequest("m", "openai", []byte(body), nil)
+		m := decodeOut(t, out, eErr)
+		if m["model"] != "m" || m["temperature"] != 0.7 {
+			t.Fatalf("model rewrite failed: %v", m)
+		}
+		if _, ok := m["thinking"]; ok {
+			t.Fatalf("thinking should not be present: %v", m)
+		}
+	})
+
+	t.Run("nil or empty json handling", func(t *testing.T) {
+		if _, eErr := BuildRequest("m", "openai", []byte(""), nil); eErr == nil || eErr.Class != errclass.ClassTranslation {
+			t.Fatalf("empty slice: want ClassTranslation, got %+v", eErr)
+		}
+
+		outNull, eErrNull := BuildRequest("m", "openai", []byte("null"), nil)
+		if eErrNull == nil || eErrNull.Class != errclass.ClassTranslation {
+			t.Fatalf("null JSON: want ClassTranslation, got %+v", eErrNull)
+		}
+		if !strings.Contains(eErrNull.Message, "JSON null is not a valid request") {
+			t.Fatalf("null JSON: unexpected error message: %q", eErrNull.Message)
+		}
+		if outNull != nil {
+			t.Fatalf("null JSON: expected nil output, got %s", string(outNull))
+		}
+
+		for _, invalid := range []string{"123", `"string"`, `[]`, `true`} {
+			if _, eErr := BuildRequest("m", "openai", []byte(invalid), nil); eErr == nil || eErr.Class != errclass.ClassTranslation {
+				t.Fatalf("%s: want ClassTranslation, got %+v", invalid, eErr)
+			}
+		}
+	})
+}
+
 // TestBuildRequestThinkingEffort proves budget→effort conversion is
 // capability-aware (FR-005): tiers beyond the static low/medium/high
 // buckets survive when the model declares them.
