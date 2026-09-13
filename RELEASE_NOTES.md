@@ -1,6 +1,7 @@
 ## What's Changed
 
-- Fix HTTP 400 errors on DeepSeek models (`deepseek-flash`, `deepseek-v4.1-flash`, etc.) caused by OpenCode Go's backend rejecting untyped client reasoning metadata (such as `thinking: { levels: [...] }` sent by some OpenAI-compatible clients). Incoming `/v1/chat/completions` requests are now sanitized to strip untyped `thinking` metadata while preserving native `reasoning_effort` and valid Anthropic-style thinking objects.
+- Fix the OpenCode Go quota page on CLIProxyAPI v7.2.159+ where the new native `POST /v0/management/plugins/:id/quota` route intercepted the plugin's quota request before it reached the plugin. The plugin's quota data route is now `/plugins/opencode-go-cliproxyapi/quota-usage`; the Management Center menu and page URL are unchanged.
+- Thanks to [@turnercore](https://github.com/turnercore) for the fix in [#3](https://github.com/massiveits/opencode-go-cliproxyapi/pull/3).
 
 ## Upgrade Notes
 
@@ -8,4 +9,4 @@
 - Restart CLIProxyAPI after replacing the plugin.
 - Hard-refresh Management Center if the plugin page looks stale.
 
-**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.5...v0.1.6
+**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.6...v0.1.7
