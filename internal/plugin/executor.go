@@ -42,9 +42,10 @@ type executorRequest struct {
 // resolvedExecution carries everything both execution paths need after
 // model/key resolution succeeded.
 type resolvedExecution struct {
-	cfg config.Config
-	rec catalog.ModelRecord
-	key string
+	tools shared.ResponseTools
+	cfg   config.Config
+	rec   catalog.ModelRecord
+	key   string
 }
 
 // resolveExecution resolves the requested model against the snapshot and
@@ -97,7 +98,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -125,19 +126,19 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
 		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
 	}
-	converted, eErr := convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body)
+	converted, eErr := convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: converted, Headers: resp.Headers}), nil
 }
 
-func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch route {
 	case catalog.RouteChatCompletions:
-		return chatcompletions.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts)
+		return chatcompletions.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	case catalog.RouteMessages:
-		return messages.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts)
+		return messages.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	case catalog.RouteResponses:
 		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts)
 	}
@@ -290,12 +291,12 @@ func deriveOpenCodeSessionID(sourceFormat string, originalRequest []byte) (strin
 // translator: every adapter owns status classification (>=400 → §7
 // classified errors), native passthrough, and cross-format conversion for
 // all client formats.
-func convertNonStream(route catalog.Route, sourceFormat string, status int, body []byte) ([]byte, *errclass.Error) {
+func convertNonStream(route catalog.Route, sourceFormat string, status int, body []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch route {
 	case catalog.RouteChatCompletions:
-		return chatcompletions.ConvertNonStreamResponse(sourceFormat, status, body)
+		return chatcompletions.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	case catalog.RouteMessages:
-		return messages.ConvertNonStreamResponse(sourceFormat, status, body)
+		return messages.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	case catalog.RouteResponses:
 		return responses.ConvertNonStreamResponse(sourceFormat, status, body)
 	}
@@ -323,14 +324,14 @@ var (
 	_ interface{ Flush() [][]byte } = (*messages.StreamConverter)(nil)
 )
 
-func newStreamConverter(route catalog.Route, sourceFormat string) streamConverter {
+func newStreamConverter(route catalog.Route, sourceFormat string, tools ...*shared.ResponseTools) streamConverter {
 	switch route {
 	case catalog.RouteMessages:
-		return messages.NewStreamConverter(sourceFormat)
+		return messages.NewStreamConverter(sourceFormat, tools...)
 	case catalog.RouteResponses:
 		return responses.NewStreamConverter(sourceFormat)
 	}
-	return chatcompletions.NewStreamConverter(sourceFormat)
+	return chatcompletions.NewStreamConverter(sourceFormat, tools...)
 }
 
 // handleExecuteStream implements executor.execute_stream (FR-006, §7).
@@ -361,7 +362,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -420,7 +421,7 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 	})
 	defer watchdog.Stop()
 
-	conv := newStreamConverter(res.rec.Protocol, sourceFormat)
+	conv := newStreamConverter(res.rec.Protocol, sourceFormat, &res.tools)
 	var (
 		total          int64
 		upstreamClosed bool

@@ -21,9 +21,10 @@ import (
 // goroutine-safe; use one converter per upstream stream. Synthesis
 // follows choices[0] (upstream serves n=1 routes).
 type StreamConverter struct {
-	sourceFormat string
-	lineBuf      []byte // partial SSE line carried across Feed calls
-	done         bool
+	responseTools *shared.ResponseTools
+	sourceFormat  string
+	lineBuf       []byte // partial SSE line carried across Feed calls
+	done          bool
 
 	started      bool // message_start / first chunk seen
 	id           string
@@ -57,11 +58,13 @@ type streamTool struct {
 
 // NewStreamConverter returns a converter translating Chat Completions
 // SSE into sourceFormat's stream shape.
-func NewStreamConverter(sourceFormat string) *StreamConverter {
+// tools must be the context populated by BuildRequest for this request.
+func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *StreamConverter {
 	return &StreamConverter{
-		sourceFormat: sourceFormat,
-		msgIndex:     -1,
-		tools:        map[int64]*streamTool{},
+		responseTools: shared.ResponseToolContext(tools),
+		sourceFormat:  sourceFormat,
+		msgIndex:      -1,
+		tools:         map[int64]*streamTool{},
 	}
 }
 
@@ -487,7 +490,7 @@ func (sc *StreamConverter) responsesLine(line string) ([][]byte, *errclass.Error
 // upstream chunk identity so this route's frames cannot diverge from the
 // sibling Messages-route synthesizer (FR-006).
 func (sc *StreamConverter) responsesEm() shared.ResponsesEventEmitter {
-	return shared.ResponsesEventEmitter{ID: sc.id, Model: sc.model}
+	return shared.ResponsesEventEmitter{ID: sc.id, Model: sc.model, Tools: sc.responseTools}
 }
 
 // responsesTerminal renders the held response.completed exactly once,
@@ -509,7 +512,7 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 	// tools-first announcements), never displacing already-announced
 	// function_call items; this mirrors the Messages-route invariant that
 	// terminal output order equals announcement order (W4 pin).
-	oa := shared.NewOutputAssembler(sc.id)
+	oa := shared.NewOutputAssembler(sc.id, sc.responseTools)
 	reserved := false
 	for _, idx := range sc.toolOrder {
 		t := sc.tools[idx]

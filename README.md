@@ -33,6 +33,14 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **OpenCode Go Quota Page**: Management Center includes a separate `OpenCode Go Quota` page. Page load lists credentials without contacting OpenCode; each card is refreshed manually and independently, and quota values do not affect routing or CPA's native quota page.
 
+Responses clients such as Codex can supply function declarations in
+`input` items with `type: "additional_tools"`. The plugin merges these with
+top-level `tools` when translating to Chat Completions or Messages. Repeated
+definitions keep the first declaration, with top-level tools taking precedence.
+Namespaced functions retain their original name and namespace in returned tool
+calls, including streaming responses. Native Responses routes pass through as
+before. Non-function tools still require a compatible native Responses route.
+
 ## Requirements
 
 - **CLIProxyAPI**: `v7.2.138+`
