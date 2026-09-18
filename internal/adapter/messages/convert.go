@@ -48,7 +48,8 @@ type claudeResponseIn struct {
 // text, tool_use, stop reason, and usage while dropping thinking blocks
 // (FR-005 explicit omission). Unknown formats are ClassUnsupported;
 // malformed upstream bodies are ClassTranslation.
-func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte) ([]byte, *errclass.Error) {
+// tools must be the context populated by BuildRequest for this request.
+func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	if status >= 400 {
 		return nil, shared.UpstreamStatusError(status, upstreamBody)
 	}
@@ -61,7 +62,7 @@ func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []by
 	case "openai":
 		return claudeToChat(upstreamBody)
 	case "openai-response":
-		return claudeToResponses(upstreamBody)
+		return claudeToResponses(upstreamBody, tools...)
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -158,7 +159,7 @@ func decodeBlockInput(raw json.RawMessage) any {
 // (FR-006). Thinking and redacted_thinking blocks are omitted — Responses
 // has no standard reasoning-summary equivalent without signatures (FR-005
 // policy).
-func claudeToResponses(body []byte) ([]byte, *errclass.Error) {
+func claudeToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	resp, eErr := decodeClaude(body)
 	if eErr != nil {
 		return nil, eErr
@@ -175,7 +176,7 @@ func claudeToResponses(body []byte) ([]byte, *errclass.Error) {
 		Output: []any{},
 		Usage:  shared.NewResponsesUsageFrom(resp.Usage.InputTokens+valueOrZero(resp.Usage.CacheRead)+valueOrZero(resp.Usage.CacheCreation), resp.Usage.OutputTokens, shared.UsageDetails{CachedTokens: resp.Usage.CacheRead, CacheWriteTokens: resp.Usage.CacheCreation}),
 	}
-	oa := shared.NewOutputAssembler(resp.ID)
+	oa := shared.NewOutputAssembler(resp.ID, tools...)
 	for _, blk := range resp.Content {
 		switch blk.Type {
 		case "text":

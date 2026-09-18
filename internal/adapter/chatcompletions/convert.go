@@ -44,7 +44,8 @@ type ccResponse struct {
 // passes through; "claude" and "openai-response" are converted,
 // preserving text, tool calls, finish reason, and usage. Unknown formats
 // are ClassUnsupported; malformed upstream bodies are ClassTranslation.
-func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte) ([]byte, *errclass.Error) {
+// tools must be the context populated by BuildRequest for this request.
+func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	if status >= 400 {
 		return nil, shared.UpstreamStatusError(status, upstreamBody)
 	}
@@ -54,7 +55,7 @@ func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []by
 	case "claude":
 		return chatToClaude(upstreamBody)
 	case "openai-response":
-		return chatToResponses(upstreamBody)
+		return chatToResponses(upstreamBody, tools...)
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -156,7 +157,7 @@ func claudeToolUseBlocks(calls []shared.CCToolCall) ([]claudeBlock, *errclass.Er
 // item, tool_calls become function_call items, finish_reason length maps
 // to status incomplete, and prompt/completion tokens map to input/output
 // usage (FR-006).
-func chatToResponses(body []byte) ([]byte, *errclass.Error) {
+func chatToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	resp, eErr := decodeCC(body)
 	if eErr != nil {
 		return nil, eErr
@@ -180,7 +181,7 @@ func chatToResponses(body []byte) ([]byte, *errclass.Error) {
 	// The shared assembler gives Chat Completions placement (no reserved
 	// slot): the message leads and appears only when text is non-empty,
 	// matching the streaming terminal (FR-006 sibling parity).
-	oa := shared.NewOutputAssembler(resp.ID)
+	oa := shared.NewOutputAssembler(resp.ID, tools...)
 	for _, b := range blocks {
 		if b["type"] != "text" {
 			return nil, errclass.Translation(fmt.Sprintf(

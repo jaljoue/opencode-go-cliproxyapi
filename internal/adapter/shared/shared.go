@@ -627,8 +627,9 @@ func (e ClaudeEventEmitter) MessageStop() []byte {
 // completed payload always carries the model, matching the non-stream
 // ResponsesResult shape.
 type ResponsesEventEmitter struct {
-	ID    string // response identity carried by every event
-	Model string // model rendered on the terminal completed payload
+	ID    string         // response identity carried by every event
+	Model string         // model rendered on the terminal completed payload
+	Tools *ResponseTools // original request tool identities
 }
 
 // Created renders the leading response.created announcement.
@@ -645,6 +646,14 @@ func (e ResponsesEventEmitter) Created() []byte {
 // the block-type-specific fields (message id/role/content, or function_call
 // call_id/name/arguments per the canonical call_id-only shape).
 func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) []byte {
+	if item["type"] == "function_call" {
+		name, _ := item["name"].(string)
+		identity := e.Tools.identity(name)
+		item["name"] = identity.name
+		if identity.namespace != "" {
+			item["namespace"] = identity.namespace
+		}
+	}
 	return SSEEvent("response.output_item.added", map[string]any{
 		"type": "response.output_item.added", "output_index": outputIndex, "item": item,
 	})
@@ -869,12 +878,13 @@ type ResponsesResult struct {
 	Usage  ResponsesUsage `json:"usage"`
 }
 
-// RespTool is one Responses function tool.
+// RespTool is a Responses function declaration or a namespace of declarations.
 type RespTool struct {
-	Type        string          `json:"type"` // always "function"
+	Type        string          `json:"type"` // function or namespace
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Tools       []RespTool      `json:"tools,omitempty"`
 }
 
 // ResponsesRequest decodes an inbound OpenAI Responses request body
@@ -951,6 +961,8 @@ type RespItem struct {
 	Summary   []struct {
 		Text string `json:"text"`
 	} `json:"summary,omitempty"`
+	Tools     []RespTool `json:"tools,omitempty"`
+	Namespace string     `json:"namespace,omitempty"`
 }
 
 // CCFunction is one Chat Completions tool function definition (decode and
@@ -1148,6 +1160,25 @@ type ClaudeMessageRecord struct {
 	Role    string
 	Content string
 	Blocks  []ClaudeBlock
+}
+
+// ClaudeSystemMessageText preserves text in an inline system message. These
+// messages may appear between conversation turns; never hoist them into the
+// initial prompt or convert their instructions to user text.
+func ClaudeSystemMessageText(m ClaudeMessageRecord, target string) (string, *errclass.Error) {
+	parts := []string{}
+	if m.Content != "" {
+		parts = append(parts, m.Content)
+	}
+	for _, block := range m.Blocks {
+		if block.Kind != "text" {
+			return "", UnsupportedPartType(block.Kind, target+" system message")
+		}
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 // ClaudeRequestRecord is the normalized decode of an inbound Anthropic
@@ -1403,6 +1434,7 @@ type outputTextPart struct {
 // only when text is non-empty). Render materializes the array once, at
 // terminal time.
 type OutputAssembler struct {
+	tools     *ResponseTools
 	messageID string          // identity carried by the message item
 	items     []any           // rendered items in insertion order
 	textSlot  int             // reserved message position, -1 until reserved
@@ -1411,8 +1443,8 @@ type OutputAssembler struct {
 
 // NewOutputAssembler binds an assembler to the response identity the
 // synthesized message item carries.
-func NewOutputAssembler(messageID string) *OutputAssembler {
-	return &OutputAssembler{messageID: messageID, textSlot: -1, items: make([]any, 0)}
+func NewOutputAssembler(messageID string, tools ...*ResponseTools) *OutputAssembler {
+	return &OutputAssembler{messageID: messageID, textSlot: -1, items: make([]any, 0), tools: ResponseToolContext(tools)}
 }
 
 // ReserveTextSlot pins the message item's position at the current end of
@@ -1435,8 +1467,9 @@ func (a *OutputAssembler) AddText(fragment string) {
 // arguments pass through verbatim — callers apply the absent-arguments
 // policy themselves.
 func (a *OutputAssembler) AppendFunctionCall(callID, name, args string) {
+	identity := a.tools.identity(name)
 	a.items = append(a.items, RespItem{
-		Type: "function_call", CallID: callID, Name: name, Arguments: args,
+		Type: "function_call", CallID: callID, Name: identity.name, Namespace: identity.namespace, Arguments: args,
 	})
 }
 

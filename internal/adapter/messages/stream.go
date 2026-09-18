@@ -17,6 +17,7 @@ import (
 // one instance per upstream response, Feed called with consecutive
 // network chunks in order.
 type StreamConverter struct {
+	responseTools    *shared.ResponseTools
 	framer           *shared.SSEFramer
 	sourceFormat     string
 	created          int64
@@ -52,13 +53,15 @@ type blockState struct {
 // NewStreamConverter prepares stream conversion for sourceFormat
 // ("openai" Chat Completions chunks, "openai-response" Responses events,
 // "claude" verbatim passthrough).
-func NewStreamConverter(sourceFormat string) *StreamConverter {
+// tools must be the context populated by BuildRequest for this request.
+func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *StreamConverter {
 	return &StreamConverter{
-		framer:       shared.NewSSEFramer(sourceFormat == "claude"),
-		sourceFormat: sourceFormat,
-		created:      time.Now().Unix(),
-		blocks:       map[int]*blockState{},
-		msgIdx:       -1,
+		responseTools: shared.ResponseToolContext(tools),
+		framer:        shared.NewSSEFramer(sourceFormat == "claude"),
+		sourceFormat:  sourceFormat,
+		created:       time.Now().Unix(),
+		blocks:        map[int]*blockState{},
+		msgIdx:        -1,
 	}
 }
 
@@ -341,7 +344,7 @@ func (sc *StreamConverter) responsesCompleted() []byte {
 // upstream message identity so this route's frames cannot diverge from the
 // sibling Chat-Completions-route synthesizer (FR-006).
 func (sc *StreamConverter) responsesEm() shared.ResponsesEventEmitter {
-	return shared.ResponsesEventEmitter{ID: sc.msgID, Model: sc.model}
+	return shared.ResponsesEventEmitter{ID: sc.msgID, Model: sc.model, Tools: sc.responseTools}
 }
 
 // Flush terminates a stream whose upstream closed before message_stop:
@@ -381,7 +384,7 @@ func (sc *StreamConverter) outputItems() []any {
 		indexes = append(indexes, i)
 	}
 	sort.Ints(indexes)
-	oa := shared.NewOutputAssembler(sc.msgID)
+	oa := shared.NewOutputAssembler(sc.msgID, sc.responseTools)
 	for _, i := range indexes {
 		bs := sc.blocks[i]
 		switch bs.kind {

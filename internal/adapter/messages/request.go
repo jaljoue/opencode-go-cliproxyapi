@@ -53,14 +53,15 @@ type messagesRequest struct {
 // reasoning controls resolve against what the model actually supports.
 // Unknown formats are ClassUnsupported; malformed input is
 // ClassTranslation. Errors are descriptive and redacted — no silent loss.
-func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+// Pass a ResponseTools context to retain namespaced identities for response conversion.
+func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "claude":
 		return shared.RewriteModelID(upstreamModel, sourceBody, "claude")
 	case "openai":
 		return fromChatCompletions(upstreamModel, sourceBody, ts)
 	case "openai-response":
-		return fromResponses(upstreamModel, sourceBody, ts)
+		return fromResponses(upstreamModel, sourceBody, ts, tools...)
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -310,10 +311,14 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 // map like Chat Completions messages, function_call/function_call_output
 // items map to tool_use/tool_result blocks, reasoning summaries are kept
 // as best-effort thinking blocks (signatures unavailable upstream).
-func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	var src shared.ResponsesRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai-response request JSON: " + err.Error())
+	}
+	items, eErr := shared.ResponseToolContext(tools).Normalize(&src, EndpointPath)
+	if eErr != nil {
+		return nil, eErr
 	}
 	// Same shared kernel policy as the Chat Completions leg (FR-005).
 	maxTokens := int64(0)
@@ -338,10 +343,6 @@ func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupp
 	}
 
 	var b msgBuilder
-	items, eErr := src.DecodeInputItems()
-	if eErr != nil {
-		return nil, eErr
-	}
 	for _, item := range items {
 		switch item.Type {
 		case "message":

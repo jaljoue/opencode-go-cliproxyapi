@@ -35,14 +35,15 @@ func AuthHeaders(key string) http.Header {
 // degraded (FR-005). Unknown formats are ClassUnsupported; malformed
 // input is ClassTranslation. Errors are descriptive and redacted — no
 // silent loss of tools or reasoning controls.
-func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+// Pass a ResponseTools context to retain namespaced identities for response conversion.
+func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai":
 		return buildOpenAIRequest(upstreamModel, sourceBody)
 	case "claude":
 		return claudeToChat(upstreamModel, sourceBody, ts)
 	case "openai-response":
-		return responsesToChat(upstreamModel, sourceBody, ts)
+		return responsesToChat(upstreamModel, sourceBody, ts, tools...)
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -171,6 +172,14 @@ func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSuppo
 	for i := range src.Messages {
 		m := &src.Messages[i]
 		switch m.Role {
+		case "system":
+			text, eErr := shared.ClaudeSystemMessageText(*m, EndpointPath)
+			if eErr != nil {
+				return nil, eErr
+			}
+			if text != "" {
+				out.Messages = append(out.Messages, ccMessage{Role: "system", Content: text})
+			}
 		case "user":
 			msgs, eErr := claudeUserMessages(m)
 			if eErr != nil {
@@ -304,10 +313,14 @@ func claudeAssistantMessage(m *shared.ClaudeMessageRecord) (*ccMessage, *errclas
 // same field), and max_output_tokens maps to max_tokens. Historical
 // reasoning items are omitted (no CC equivalent; FR-005 explicit omission
 // policy).
-func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	var src shared.ResponsesRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai-response request JSON: " + err.Error())
+	}
+	items, eErr := shared.ResponseToolContext(tools).Normalize(&src, EndpointPath)
+	if eErr != nil {
+		return nil, eErr
 	}
 	out := &ccRequest{
 		Model:             upstreamModel,
@@ -342,10 +355,6 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 	}
 	addSystem(instr)
 
-	items, eErr := src.DecodeInputItems()
-	if eErr != nil {
-		return nil, eErr
-	}
 	for _, item := range items {
 		switch item.Type {
 		case "message":
