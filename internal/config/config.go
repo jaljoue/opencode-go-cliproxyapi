@@ -48,32 +48,34 @@ type RouteOverride struct {
 }
 
 type Config struct {
-	BaseURL          string
-	CatalogURL       string
-	ModelPrefix      ModelPrefix
-	APIKeys          []APIKey
-	Catalog          Catalog
-	Protocols        Protocols
-	RouteOverrides   map[string]RouteOverride
-	AllowHTTP        bool
-	RequestTimeout   time.Duration
-	MaxResponseBytes int64
+	StripHostedWebSearch bool
+	BaseURL              string
+	CatalogURL           string
+	ModelPrefix          ModelPrefix
+	APIKeys              []APIKey
+	Catalog              Catalog
+	Protocols            Protocols
+	RouteOverrides       map[string]RouteOverride
+	AllowHTTP            bool
+	RequestTimeout       time.Duration
+	MaxResponseBytes     int64
 }
 
 // rawConfig mirrors the YAML shape; pointer fields distinguish "unset"
 // (apply default) from explicitly-set values including "" (validate as-is).
 // Unknown fields are ignored (host may pass extra keys).
 type rawConfig struct {
-	BaseURL          *string                  `yaml:"base-url"`
-	CatalogURL       *string                  `yaml:"catalog-url"`
-	ModelPrefix      rawPrefix                `yaml:"model-prefix"`
-	APIKeys          []rawKey                 `yaml:"api-keys"`
-	Catalog          rawCatalog               `yaml:"catalog"`
-	Protocols        rawProtocols             `yaml:"protocols"`
-	RouteOverrides   map[string]RouteOverride `yaml:"route-overrides"`
-	AllowHTTP        bool                     `yaml:"allow-http"`
-	RequestTimeout   *string                  `yaml:"request-timeout"`
-	MaxResponseBytes *int64                   `yaml:"max-response-bytes"`
+	StripHostedWebSearch *bool                    `yaml:"strip-hosted-web-search"`
+	BaseURL              *string                  `yaml:"base-url"`
+	CatalogURL           *string                  `yaml:"catalog-url"`
+	ModelPrefix          rawPrefix                `yaml:"model-prefix"`
+	APIKeys              []rawKey                 `yaml:"api-keys"`
+	Catalog              rawCatalog               `yaml:"catalog"`
+	Protocols            rawProtocols             `yaml:"protocols"`
+	RouteOverrides       map[string]RouteOverride `yaml:"route-overrides"`
+	AllowHTTP            bool                     `yaml:"allow-http"`
+	RequestTimeout       *string                  `yaml:"request-timeout"`
+	MaxResponseBytes     *int64                   `yaml:"max-response-bytes"`
 }
 
 type rawPrefix struct {
@@ -128,7 +130,8 @@ func Load(yamlBytes []byte) (Config, error) {
 		return Config{}, fmt.Errorf("request-timeout: must be positive")
 	}
 	c := Config{
-		BaseURL: orDefault(raw.BaseURL, DefaultBaseURL),
+		StripHostedWebSearch: orDefault(raw.StripHostedWebSearch, true),
+		BaseURL:              orDefault(raw.BaseURL, DefaultBaseURL),
 		ModelPrefix: ModelPrefix{
 			Enabled: orDefault(raw.ModelPrefix.Enabled, true),
 			Value:   orDefault(raw.ModelPrefix.Value, DefaultModelPrefix),

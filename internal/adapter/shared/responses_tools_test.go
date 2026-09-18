@@ -77,6 +77,46 @@ func strconvJSON(s string) string {
 	return string(b)
 }
 
+func TestHostedSearchChoiceAndHistory(t *testing.T) {
+	for _, tc := range []struct{ name, body, errorText string }{
+		{"optional only", `{"tools":[{"type":"web_search"}],"tool_choice":"auto","parallel_tool_calls":true}`, ""},
+		{"none", `{"tools":[{"type":"web_search"}],"tool_choice":"none"}`, ""},
+		{"implicit auto", `{"tools":[{"type":"web_search_preview"}]}`, ""},
+		{"required only", `{"tools":[{"type":"web_search"}],"tool_choice":"required"}`, "none remain"},
+		{"forced search", `{"tools":[{"type":"web_search"},{"type":"function","name":"read"}],"tool_choice":{"type":"web_search"}}`, "requires hosted web_search"},
+		{"forced preview", `{"tools":[{"type":"web_search_preview"}],"tool_choice":{"type":"web_search_preview"}}`, "requires hosted web_search"},
+		{"required surviving function", `{"tools":[{"type":"web_search"},{"type":"function","name":"read"}],"tool_choice":"required"}`, ""},
+		{"named missing tool", `{"tools":[{"type":"web_search"},{"type":"function","name":"read"}],"tool_choice":{"type":"function","name":"missing"}}`, "names a tool that is unavailable"},
+		{"search history", `{"input":[{"type":"web_search_call","id":"search_1","status":"completed"}]}`, "history cannot be translated"},
+		{"unknown hosted tool", `{"tools":[{"type":"unrecognized_hosted_tool"}]}`, "unsupported tool type"},
+		{"custom tool", `{"tools":[{"type":"custom","name":"patch"}]}`, "unsupported tool type"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r ResponsesRequest
+			if err := json.Unmarshal([]byte(tc.body), &r); err != nil {
+				t.Fatal(err)
+			}
+			tools := ResponseTools{StripHostedWebSearch: true}
+			_, eErr := tools.Normalize(&r, "/v1/chat/completions")
+			if tc.errorText != "" {
+				if eErr == nil || !strings.Contains(eErr.Message, tc.errorText) {
+					t.Fatalf("error = %v, want %s", eErr, tc.errorText)
+				}
+				return
+			}
+			if eErr != nil {
+				t.Fatal(eErr)
+			}
+			if len(r.Tools) == 0 && (r.ToolChoice != nil || r.ParallelToolCalls != nil) {
+				t.Fatalf("orphan tool controls: %+v", r)
+			}
+			if len(r.Tools) != 0 && string(r.ToolChoice) != `"required"` {
+				t.Fatalf("required choice lost: %s", r.ToolChoice)
+			}
+		})
+	}
+}
+
 func TestResponsesAdditionalToolsValidation(t *testing.T) {
 	cases := []struct {
 		name  string

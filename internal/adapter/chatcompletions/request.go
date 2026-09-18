@@ -172,6 +172,14 @@ func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSuppo
 	for i := range src.Messages {
 		m := &src.Messages[i]
 		switch m.Role {
+		case "system":
+			text, eErr := shared.ClaudeSystemMessageText(*m, EndpointPath)
+			if eErr != nil {
+				return nil, eErr
+			}
+			if text != "" {
+				out.Messages = append(out.Messages, ccMessage{Role: "system", Content: text})
+			}
 		case "user":
 			msgs, eErr := claudeUserMessages(m)
 			if eErr != nil {

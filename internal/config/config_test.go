@@ -25,6 +25,9 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(minimal) failed: %v", err)
 	}
+	if !c.StripHostedWebSearch {
+		t.Error("hosted web search filtering must default to enabled")
+	}
 	if c.BaseURL != "https://opencode.ai/zen/go/v1" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
@@ -83,6 +86,7 @@ route-overrides:
 allow-http: true
 request-timeout: 5m
 max-response-bytes: 1024
+strip-hosted-web-search: false
 `
 	c, err := Load([]byte(doc))
 	if err != nil {
@@ -121,6 +125,9 @@ max-response-bytes: 1024
 	}
 	if c.MaxResponseBytes != 1024 {
 		t.Errorf("MaxResponseBytes = %d", c.MaxResponseBytes)
+	}
+	if c.StripHostedWebSearch {
+		t.Error("explicit false must disable hosted web search filtering")
 	}
 }
 

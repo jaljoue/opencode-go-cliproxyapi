@@ -38,8 +38,21 @@ Responses clients such as Codex can supply function declarations in
 top-level `tools` when translating to Chat Completions or Messages. Repeated
 definitions keep the first declaration, with top-level tools taking precedence.
 Namespaced functions retain their original name and namespace in returned tool
-calls, including streaming responses. Native Responses routes pass through as
-before. Non-function tools still require a compatible native Responses route.
+calls, including streaming responses.
+
+When translating Responses requests to Chat Completions or Messages, the plugin
+removes optional hosted `web_search` and `web_search_preview` declarations by
+default. Those requests proceed without hosted search. Function tools, including
+client-executed search tools, are preserved. Set `strip-hosted-web-search: false`
+to reject unsupported search declarations instead. Native Responses routes keep
+their tool declarations. Forced hosted-search choices, required tool use with no
+remaining tools, and hosted search history return HTTP 400 rather than silently
+losing the requested behavior. Other unsupported tool types still return an error.
+
+Claude Code's text-only inline system messages are translated in conversation
+order on Chat Completions and Responses routes. Initial system instructions and
+client tools are preserved; Anthropic cache-control metadata is omitted on these
+routes. Non-text system blocks such as tool additions and removals are rejected.
 
 ## Requirements
 
@@ -110,6 +123,7 @@ plugins:
           endpoint: "/v1/messages"       # must start with /
 
       # Execution settings
+      strip-hosted-web-search: true      # omit optional hosted search on translated Responses requests
       request-timeout: "5m"              # upstream request timeout (default: "5m")
       max-response-bytes: 67108864       # max non-streaming response body size in bytes (default: 64 MiB)
       allow-http: false                  # allow http:// scheme for local mock/testing (default: false)
@@ -130,6 +144,7 @@ plugins:
 | `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
 | `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
 | `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
+| `strip-hosted-web-search` | `bool` | `true` | Remove optional Responses `web_search` / `web_search_preview` declarations on Chat Completions and Messages routes. Hosted search is unavailable for those requests. Native Responses routes and client function tools are preserved. Set `false` for strict rejection. |
 | `request-timeout` | `duration` | `5m` | Upstream HTTP request timeout. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` for local testing. |

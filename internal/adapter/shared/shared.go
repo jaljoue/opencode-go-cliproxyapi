@@ -1162,6 +1162,25 @@ type ClaudeMessageRecord struct {
 	Blocks  []ClaudeBlock
 }
 
+// ClaudeSystemMessageText preserves text in an inline system message. These
+// messages may appear between conversation turns; never hoist them into the
+// initial prompt or convert their instructions to user text.
+func ClaudeSystemMessageText(m ClaudeMessageRecord, target string) (string, *errclass.Error) {
+	parts := []string{}
+	if m.Content != "" {
+		parts = append(parts, m.Content)
+	}
+	for _, block := range m.Blocks {
+		if block.Kind != "text" {
+			return "", UnsupportedPartType(block.Kind, target+" system message")
+		}
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
 // ClaudeRequestRecord is the normalized decode of an inbound Anthropic
 // Messages request body (FR-005): envelope fields resolved once — max
 // tokens defaulted per ClaudeMaxTokens, system flattened per

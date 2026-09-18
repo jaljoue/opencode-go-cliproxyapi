@@ -75,7 +75,10 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 			StatusCode: http.StatusNotFound,
 		})
 	}
-	return &resolvedExecution{cfg: cfg, rec: rec, key: key}, nil
+	return &resolvedExecution{
+		cfg: cfg, rec: rec, key: key,
+		tools: shared.ResponseTools{StripHostedWebSearch: cfg.StripHostedWebSearch},
+	}, nil
 }
 
 // handleExecute implements executor.execute (non-stream). Stream-flagged
@@ -95,12 +98,12 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	}
 	sessionID, eErr := resolveOpenCodeSessionID(req)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
+		return requestErrorEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
 	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
+		return requestErrorEnvelope(eErr), nil
 	}
 
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
@@ -311,6 +314,18 @@ func classEnvelope(e *errclass.Error) []byte {
 	return out
 }
 
+// Local request validation must reach the host as a non-retryable 400. Applying
+// this only before HTTP dispatch keeps upstream response/translation failures
+// from being mislabeled as client errors.
+func requestErrorEnvelope(e *errclass.Error) []byte {
+	requestErr := *e
+	if requestErr.StatusCode == 0 && (e.Class == errclass.ClassUnsupported || e.Class == errclass.ClassTranslation) {
+		requestErr.StatusCode = http.StatusBadRequest
+		requestErr.Retryable = false
+	}
+	return classEnvelope(&requestErr)
+}
+
 // streamConverter is the common shape of the three adapters' stream
 // converters: feed one upstream SSE chunk, get translated client events.
 type streamConverter interface {
@@ -359,12 +374,12 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	}
 	sessionID, eErr := resolveOpenCodeSessionID(req)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
+		return requestErrorEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
 	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
+		return requestErrorEnvelope(eErr), nil
 	}
 
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)

@@ -18,13 +18,17 @@ type responseToolIdentity struct {
 // Responses conversation through a protocol with a flat function namespace.
 // The same instance must accompany request and response conversion.
 type ResponseTools struct {
-	names map[string]responseToolIdentity
+	// StripHostedWebSearch omits optional hosted search declarations when the
+	// upstream protocol cannot execute them. Client function tools are retained.
+	StripHostedWebSearch bool
+	names                map[string]responseToolIdentity
 }
 
 // Normalize merges top-level tools and additional_tools declarations, removes
 // declaration items from the conversation, and qualifies tool calls and choices.
 // First declaration wins for repeated identities, including across both sources.
-// Unsupported tools still fail explicitly rather than being silently discarded.
+// Optional hosted search is omitted only when StripHostedWebSearch is enabled;
+// all other unsupported tools fail explicitly.
 func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespItem, *errclass.Error) {
 	items, eErr := r.DecodeInputItems()
 	if eErr != nil {
@@ -32,8 +36,13 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	}
 	t.names = make(map[string]responseToolIdentity)
 	var tools []RespTool
+	strippedSearch := false
 	var add func(RespTool, string) *errclass.Error
 	add = func(tool RespTool, namespace string) *errclass.Error {
+		if t.StripHostedWebSearch && namespace == "" && isHostedWebSearch(tool.Type) {
+			strippedSearch = true
+			return nil
+		}
 		if tool.Type == "namespace" && namespace == "" {
 			if strings.TrimSpace(tool.Name) == "" || tool.Tools == nil {
 				return errclass.Translation("namespace tool requires a name and tools array")
@@ -86,6 +95,10 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	}
 	for i := range conversation {
 		item := &conversation[i]
+		if t.StripHostedWebSearch && item.Type == "web_search_call" {
+			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
+				Message: "hosted web_search history cannot be translated; start a new conversation or use a compatible Responses model"}
+		}
 		if item.Type == "function_call" {
 			item.Name = qualifiedResponseToolName(item.Name, item.Namespace)
 			item.Namespace = ""
@@ -96,6 +109,10 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	if json.Unmarshal(r.ToolChoice, &choice) == nil && choice != nil {
 		var kind, name, namespace string
 		_ = json.Unmarshal(choice["type"], &kind)
+		if t.StripHostedWebSearch && isHostedWebSearch(kind) {
+			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
+				Message: "tool_choice requires hosted web_search, which this upstream route cannot execute"}
+		}
 		if kind == "function" {
 			if raw, ok := choice["namespace"]; ok {
 				if json.Unmarshal(raw, &namespace) != nil || json.Unmarshal(choice["name"], &name) != nil || name == "" {
@@ -107,8 +124,34 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 			}
 		}
 	}
+	if strippedSearch {
+		kind, name, eErr := DecodeToolChoice(r.ToolChoice)
+		if eErr != nil {
+			return nil, eErr
+		}
+		if (kind == ToolChoiceAny || kind == ToolChoiceNamed) && len(tools) == 0 {
+			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
+				Message: "tool_choice requires a tool, but none remain after removing hosted web_search"}
+		}
+		if kind == ToolChoiceNamed {
+			if _, exists := t.names[name]; !exists {
+				return nil, &errclass.Error{Class: errclass.ClassUnsupported,
+					Message: "tool_choice names a tool that is unavailable after removing hosted web_search"}
+			}
+		}
+		// Avoid forwarding a tool choice without any tool declarations. Requests
+		// requiring tools have already failed above; auto/none/absent are equivalent.
+		if len(tools) == 0 {
+			r.ToolChoice = nil
+			r.ParallelToolCalls = nil
+		}
+	}
 	r.Tools = tools
 	return conversation, nil
+}
+
+func isHostedWebSearch(toolType string) bool {
+	return toolType == "web_search" || toolType == "web_search_preview"
 }
 
 func qualifiedResponseToolName(name, namespace string) string {
