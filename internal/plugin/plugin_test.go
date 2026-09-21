@@ -447,7 +447,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
 	}
 	if reg.Metadata.Name != "opencode-go-cliproxyapi" || reg.Metadata.Version != pluginVersion ||
-		len(reg.Metadata.ConfigFields) != 0 {
+		len(reg.Metadata.ConfigFields) != 10 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -490,6 +490,51 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	decodeResult(t, mustHandle(t, m, "model.for_auth", []byte("{}")), &forAuth)
 	if forAuth.Provider != ProviderID || len(forAuth.Models) != 1 || forAuth.Models[0].ID != got.ID {
 		t.Fatalf("for_auth = %+v", forAuth)
+	}
+}
+
+func TestRegistrationConfigFields(t *testing.T) {
+	m, _ := newTestManager(catalogResponder(true, testCatalogJSON))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+
+	resp, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var reg registrationResult
+	decodeResult(t, resp, &reg)
+
+	expectedFields := []struct {
+		name string
+		typ  pluginapi.ConfigFieldType
+	}{
+		{"api-keys", pluginapi.ConfigFieldTypeArray},
+		{"base-url", pluginapi.ConfigFieldTypeString},
+		{"catalog-url", pluginapi.ConfigFieldTypeString},
+		{"model-prefix", pluginapi.ConfigFieldTypeObject},
+		{"catalog", pluginapi.ConfigFieldTypeObject},
+		{"protocols", pluginapi.ConfigFieldTypeObject},
+		{"route-overrides", pluginapi.ConfigFieldTypeObject},
+		{"request-timeout", pluginapi.ConfigFieldTypeString},
+		{"max-response-bytes", pluginapi.ConfigFieldTypeInteger},
+		{"allow-http", pluginapi.ConfigFieldTypeBoolean},
+	}
+
+	if len(reg.Metadata.ConfigFields) != len(expectedFields) {
+		t.Fatalf("len(ConfigFields) = %d, want %d", len(reg.Metadata.ConfigFields), len(expectedFields))
+	}
+
+	for i, want := range expectedFields {
+		got := reg.Metadata.ConfigFields[i]
+		if got.Name != want.name {
+			t.Errorf("field[%d].Name = %q, want %q", i, got.Name, want.name)
+		}
+		if got.Type != want.typ {
+			t.Errorf("field[%d].Type = %q, want %q", i, got.Type, want.typ)
+		}
+		if got.Description == "" {
+			t.Errorf("field[%d].Description is empty", i)
+		}
 	}
 }
 
