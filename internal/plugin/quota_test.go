@@ -322,7 +322,7 @@ func TestQuotaPageUsesManualSessionCache(t *testing.T) {
 		"Object.entries(cache)",
 		"values.set(keyID, entry.usage)",
 		"accounts.set(keyID, account(entry))",
-		"cache[card.key_id] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp}",
+		"cache[keyID] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp}",
 		"accounts.delete(keyID)",
 		"delete cache[keyID]",
 		"new Set(cards.map(card => card.key_id))",
@@ -333,7 +333,6 @@ func TestQuotaPageUsesManualSessionCache(t *testing.T) {
 		}
 	}
 	for _, marker := range []string{
-		"setTimeout",
 		"visibilitychange",
 		"document.hidden",
 		"window.onfocus",
@@ -383,7 +382,7 @@ func TestQuotaPageUsesNativeQuotaStylesAndThemeBridge(t *testing.T) {
 			t.Fatalf("quota page missing styling marker %q", marker)
 		}
 	}
-	if strings.Count(resources.QuotaPage, `document.createElement("button")`) != 1 || strings.Contains(resources.QuotaPage, `textContent = "Refresh card"`) || strings.Contains(resources.QuotaPage, "quota-button") || strings.Contains(resources.QuotaPage, "quota-refresh-small") {
+	if strings.Contains(resources.QuotaPage, `textContent = "Refresh card"`) || strings.Contains(resources.QuotaPage, "quota-button") || strings.Contains(resources.QuotaPage, "quota-refresh-small") {
 		t.Fatal("quota page does not have exactly one secondary refresh button path")
 	}
 	for _, marker := range []string{"querySelectorAll('head link[rel=\"stylesheet\"], head style')", "cloneNode(true)", "dataset.cpaStyle"} {

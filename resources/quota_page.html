@@ -50,7 +50,11 @@
 html, body { min-height: 100%; }
 body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--bg-secondary); font: 14px/1.45 system-ui, sans-serif; }
 .quota-page { max-width: 1160px; margin: 0 auto; }
-.quota-header { margin-bottom: 24px; }
+.quota-header { display: flex; justify-content: flex-start; align-items: center; gap: 96px; margin-bottom: 24px; flex-wrap: wrap; }
+.quota-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.quota-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; color: var(--text-primary); background: var(--bg-tertiary); font: inherit; font-size: 12px; font-weight: 500; text-decoration: none; cursor: pointer; transition: background .15s, border-color .15s; }
+.quota-btn:hover { border-color: var(--primary-color); background: var(--bg-primary); }
+.quota-btn:disabled { cursor: not-allowed; opacity: .6; }
 .quota-title { margin: 0; font-size: 28px; font-weight: 700; line-height: 1.2; }
 .quota-description { margin: 8px 0 0; color: var(--text-secondary); }
 .quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
@@ -84,7 +88,15 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 </head>
 <body>
 <div class="quota-page">
-  <header class="quota-header"><h1 class="quota-title">OpenCode Go Quota</h1><p class="quota-description">Usage for each configured credential. Refresh cards individually. Plan and account email need an API key with All permissions.</p></header>
+  <header class="quota-header">
+    <div>
+      <h1 class="quota-title">OpenCode Go Quota</h1>
+      <p class="quota-description">Usage for each configured credential. Plan and account email need an API key with All permissions.</p>
+    </div>
+    <div class="quota-header-actions">
+      <button id="refresh-all-btn" class="quota-btn" style="display: none;">Refresh All</button>
+    </div>
+  </header>
   <main id="app"><p class="quota-muted">Loading credentials...</p></main>
 </div>
 <script>
@@ -113,11 +125,14 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 <script>
 (() => {
   const app = document.getElementById("app");
+  const refreshAllBtn = document.getElementById("refresh-all-btn");
   const endpoint = "/v0/management/plugins/opencode-go-cliproxyapi/quota-usage";
   const storageKey = "opencode-go-cliproxyapi:quota";
   const values = new Map();
   const accounts = new Map();
   const fetchedAt = new Map();
+  const cardErrors = new Map();
+  let isRefreshingAll = false;
   let cache = {};
   try {
     const stored = sessionStorage.getItem(storageKey);
@@ -138,6 +153,12 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   }
   function saveCache() {
     try { sessionStorage.setItem(storageKey, JSON.stringify(cache)); } catch (_) {}
+  }
+  function store(keyID, result) {
+    const timestamp = new Date().toISOString(); const info = account(result);
+    values.set(keyID, result.usage); accounts.set(keyID, info); fetchedAt.set(keyID, timestamp);
+    cache[keyID] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp};
+    saveCache();
   }
   function auth() {
     const raw = localStorage.getItem("cli-proxy-auth");
@@ -178,6 +199,12 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     row.append(value, track, meta);
   }
   function render(cards) {
+    if (cards.length > 0) {
+      if (refreshAllBtn) refreshAllBtn.style.display = "";
+    }
+    if (cards.length === 0) {
+      if (refreshAllBtn) refreshAllBtn.style.display = "none";
+    }
     app.textContent = "";
     if (!cards.length) { const p = document.createElement("p"); p.className = "quota-muted"; p.setAttribute("role", "status"); p.textContent = "No configured credentials."; app.appendChild(p); return; }
     const grid = document.createElement("div"); grid.className = "quota-grid";
@@ -195,19 +222,55 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
       ["rolling", "weekly", "monthly"].forEach(name => {
         const row = document.createElement("div"); row.className = "quota-row";
         const rowHeader = document.createElement("div"); rowHeader.className = "quota-row-header"; const label = document.createElement("span"); label.className = "quota-label"; label.textContent = name; rowHeader.appendChild(label); row.appendChild(rowHeader);
-       const usage = values.get(card.key_id) && values.get(card.key_id)[name];
-         if (usage) renderUsage(row, usage); else { const pending = document.createElement("div"); pending.className = "quota-meta"; pending.textContent = "Not refreshed"; row.appendChild(pending); }
-         section.appendChild(row);
-       });
+        const usage = values.get(card.key_id) && values.get(card.key_id)[name];
+        if (usage) renderUsage(row, usage); else { const pending = document.createElement("div"); pending.className = "quota-meta"; pending.textContent = "Not refreshed"; row.appendChild(pending); }
+        section.appendChild(row);
+      });
       const updated = fetchedAt.get(card.key_id);
       if (updated) { const timestamp = document.createElement("div"); timestamp.className = "quota-meta"; timestamp.textContent = "Updated " + new Date(updated).toLocaleString(); section.appendChild(timestamp); }
       const actions = document.createElement("div"); actions.className = "quota-actions";
       const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = "Refresh"; button.setAttribute("aria-label", "Refresh " + card.label);
+      if (isRefreshingAll) button.disabled = true;
       const error = document.createElement("span"); error.className = "quota-error"; error.setAttribute("role", "status");
-      button.onclick = () => { button.disabled = true; error.textContent = ""; request({key_id: card.key_id}).then(result => { const timestamp = new Date().toISOString(); const info = account(result); values.set(card.key_id, result.usage); accounts.set(card.key_id, info); fetchedAt.set(card.key_id, timestamp); cache[card.key_id] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp}; saveCache(); render(cards); }).catch(err => { error.textContent = err.message || "Refresh failed"; button.disabled = false; }); };
+      if (cardErrors.has(card.key_id)) error.textContent = cardErrors.get(card.key_id);
+      button.onclick = () => { button.disabled = true; error.textContent = ""; cardErrors.delete(card.key_id); request({key_id: card.key_id}).then(result => { store(card.key_id, result); render(cards); }).catch(err => { const msg = err.message || "Refresh failed"; cardErrors.set(card.key_id, msg); error.textContent = msg; button.disabled = false; }); };
       actions.append(button, error); section.appendChild(actions); grid.appendChild(section);
     });
     app.appendChild(grid);
+
+    if (refreshAllBtn) {
+      refreshAllBtn.onclick = async () => {
+        if (!cards.length || refreshAllBtn.disabled) return;
+        refreshAllBtn.disabled = true;
+        isRefreshingAll = true;
+        const cardButtons = Array.from(document.querySelectorAll(".quota-refresh"));
+        cardButtons.forEach(btn => btn.disabled = true);
+
+        try {
+          for (let i = 0; i < cards.length; i++) {
+            const card = cards[i];
+            refreshAllBtn.textContent = "Refreshing (" + (i + 1) + "/" + cards.length + ")...";
+            try {
+              const result = await request({key_id: card.key_id});
+              store(card.key_id, result);
+              cardErrors.delete(card.key_id);
+              render(cards);
+            } catch (err) {
+              cardErrors.set(card.key_id, err.message || "Refresh failed");
+              render(cards);
+            }
+            if (i < cards.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+          }
+        } finally {
+          isRefreshingAll = false;
+          render(cards);
+          refreshAllBtn.textContent = "Refresh All";
+          refreshAllBtn.disabled = false;
+        }
+      };
+    }
   }
   if (!auth()) { app.textContent = ""; const p = document.createElement("p"); p.className = "quota-error"; p.setAttribute("role", "status"); p.textContent = "Enable Remember password in Management Center to use this page."; app.appendChild(p); return; }
   request({}).then(result => { const cards = result.cards || []; const configured = new Set(cards.map(card => card.key_id)); Object.keys(cache).forEach(keyID => { if (!configured.has(keyID)) { delete cache[keyID]; values.delete(keyID); accounts.delete(keyID); fetchedAt.delete(keyID); } }); saveCache(); render(cards); }).catch(err => { app.textContent = ""; const p = document.createElement("p"); p.className = "quota-error"; p.setAttribute("role", "status"); p.textContent = err.message || "Unable to load credentials."; app.appendChild(p); });

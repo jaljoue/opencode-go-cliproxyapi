@@ -3,6 +3,7 @@
 ### Features
 
 - Expose `ConfigFields` in plugin registration metadata, enabling interactive configuration editing in CLIProxyAPI Management Center for all plugin settings (`api-keys`, `base-url`, `catalog-url`, `model-prefix`, `catalog`, `protocols`, `route-overrides`, `request-timeout`, `max-response-bytes`, `allow-http`).
+- Add "Refresh All" button in quota page.
 
 ### Bug Fixes
 
