@@ -456,6 +456,45 @@ func TestToolResultText(t *testing.T) {
 	}
 }
 
+func TestRespOutputText(t *testing.T) {
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`)} {
+		if got, _ := RespOutputText(raw, "n"); got != "" {
+			t.Errorf("absent output = %q", got)
+		}
+	}
+	if got, _ := RespOutputText(json.RawMessage(`"plain"`), "n"); got != "plain" {
+		t.Errorf("string output = %q", got)
+	}
+	got, eErr := RespOutputText(json.RawMessage(`[{"type":"input_text","text":"a"},{"type":"output_text","text":"b"},{"type":"text","text":"c"}]`), "n")
+	if eErr != nil || got != "abc" {
+		t.Errorf("part array = %q, %v; want abc, nil", got, eErr)
+	}
+	if _, eErr := RespOutputText(json.RawMessage(`[{"type":"input_image","image_url":"https://x"}]`), "tool messages carry text only"); eErr == nil ||
+		eErr.Class != errclass.ClassTranslation ||
+		eErr.Message != `unsupported function_call_output content part type "input_image"; tool messages carry text only` {
+		t.Errorf("non-text part err = %+v", eErr)
+	}
+	if _, eErr := RespOutputText(json.RawMessage(`42`), "n"); eErr == nil || eErr.Class != errclass.ClassTranslation {
+		t.Errorf("malformed output err = %+v", eErr)
+	}
+}
+
+func TestDecodeInputItemsPartArrayOutput(t *testing.T) {
+	// OpenCode sends function_call_output.output as a content-part array
+	// whenever a tool returns multi-part content; the whole item array
+	// used to fail to decode on it.
+	req := ResponsesRequest{Input: json.RawMessage(
+		`[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"out"}]}]`)}
+	items, eErr := req.DecodeInputItems()
+	if eErr != nil {
+		t.Fatalf("DecodeInputItems = %+v", eErr)
+	}
+	text, eErr := RespOutputText(items[0].Output, "n")
+	if eErr != nil || text != "out" {
+		t.Fatalf("output = %q, %v; want out, nil", text, eErr)
+	}
+}
+
 func TestStopFinishRoundTrip(t *testing.T) {
 	for _, stop := range []string{"tool_use", "max_tokens", "refusal"} {
 		if back := FinishToClaudeStop(ClaudeStopToFinish(stop)); back != stop {

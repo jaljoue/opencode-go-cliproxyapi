@@ -471,6 +471,21 @@ func TestResponsesItems(t *testing.T) {
 	}
 }
 
+func TestResponsesFunctionCallOutputPartArray(t *testing.T) {
+	m, eErr := respReq(t, `{"input":[{"type":"function_call_output","call_id":"fc_1","output":[{"type":"input_text","text":"a"},{"type":"input_text","text":"b"}]}]}`)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	out := m["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if out["tool_use_id"] != "fc_1" || out["content"] != "ab" {
+		t.Errorf("part-array output block = %v", out)
+	}
+	_, eErr = respReq(t, `{"input":[{"type":"function_call_output","call_id":"fc_1","output":[{"type":"input_file","filename":"f"}]}]}`)
+	if eErr == nil || !strings.Contains(eErr.Message, "tool_result carries text only") {
+		t.Errorf("non-text output err = %+v", eErr)
+	}
+}
+
 func TestResponsesReasoningOmittedWhenEmptySummary(t *testing.T) {
 	m, eErr := respReq(t, `{"input":[{"type":"reasoning","summary":[]}]}`)
 	if eErr != nil {

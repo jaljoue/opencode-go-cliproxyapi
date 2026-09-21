@@ -634,6 +634,21 @@ func TestBuildRequestResponsesVariants(t *testing.T) {
 			t.Fatalf("empty parts produced messages: %v", msgs)
 		}
 	})
+	t.Run("function_call_output part array flattened", func(t *testing.T) {
+		m := mustBuild(t, "openai-response",
+			`{"input":[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"a"},{"type":"input_text","text":"b"}]}]}`, nil)
+		tool := m["messages"].([]any)[0].(map[string]any)
+		if tool["role"] != "tool" || tool["tool_call_id"] != "c1" || tool["content"] != "ab" {
+			t.Fatalf("part-array output wrong: %v", tool)
+		}
+	})
+	t.Run("function_call_output image part rejected", func(t *testing.T) {
+		_, eErr := BuildRequest("m", "openai-response", []byte(
+			`{"input":[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","image_url":"https://x"}]}]}`), nil)
+		if eErr == nil || !strings.Contains(eErr.Message, "tool messages carry text only") {
+			t.Fatalf("image output err = %+v", eErr)
+		}
+	})
 	t.Run("system text parts joined", func(t *testing.T) {
 		m := mustBuild(t, "openai-response",
 			`{"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"a"},{"type":"output_text","text":"b"}]}]}`, nil)

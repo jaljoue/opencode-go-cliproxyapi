@@ -449,6 +449,40 @@ func ToolResultText(raw json.RawMessage, targetNoun string) (string, *errclass.E
 	return b.String(), nil
 }
 
+// RespOutputText flattens a Responses function_call_output output field
+// (JSON string or content-part array — the Responses schema allows both,
+// and clients send the array form whenever a tool returns multi-part
+// content) into one text string for the target protocol's tool-result
+// field. It is the Responses-source sibling of ToolResultText: same
+// concatenation, same targetNoun wording, and non-text parts rejected
+// descriptively rather than dropped (FR-005). One kernel serves both
+// Responses-source builders so the policy cannot diverge again.
+func RespOutputText(raw json.RawMessage, targetNoun string) (string, *errclass.Error) {
+	if !HasContent(raw) {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", errclass.Translation("function_call_output output must be a string or an array of content parts")
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type != "input_text" && p.Type != "output_text" && p.Type != "text" {
+			return "", errclass.Translation(fmt.Sprintf(
+				"unsupported function_call_output content part type %q; %s", p.Type, targetNoun))
+		}
+		b.WriteString(p.Text)
+	}
+	return b.String(), nil
+}
+
 // ClaudeImageURL converts an Anthropic image block source into an image
 // URL for OpenAI-style targets, encoding base64 sources as data URLs
 // (FR-005 multimodal preservation). Strict validation shared by every
@@ -948,7 +982,9 @@ func (r *ResponsesRequest) DecodeInputItems() ([]RespItem, *errclass.Error) {
 // terminal message items (FR-006 sibling parity: the Chat Completions
 // and Messages routes emit the same "id" the streaming
 // response.output_item.added announcement used); function_call items stay
-// call_id-only per the documented canonical shape.
+// call_id-only per the documented canonical shape. Output is a JSON string
+// or a content-part array — both are legal Responses shapes — so it stays
+// raw until RespOutputText flattens it for the target field.
 type RespItem struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id,omitempty"`
@@ -957,7 +993,7 @@ type RespItem struct {
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments string          `json:"arguments,omitempty"`
-	Output    string          `json:"output,omitempty"`
+	Output    json.RawMessage `json:"output,omitempty"`
 	Summary   []struct {
 		Text string `json:"text"`
 	} `json:"summary,omitempty"`
