@@ -858,3 +858,21 @@ func TestMalformedToolChoiceRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildOpenAIRequestDeveloperRole(t *testing.T) {
+	body := `{"model":"deepseek-v4.1-flash","messages":[{"role":"developer","content":"system instructions"},{"role":"user","content":"hi"}]}`
+	out, eErr := BuildRequest("deepseek-v4.1-flash", "openai", []byte(body), nil)
+	m := decodeOut(t, out, eErr)
+	msgs, ok := m["messages"].([]any)
+	if !ok || len(msgs) < 1 {
+		t.Fatalf("invalid messages: %v", m["messages"])
+	}
+	first, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("invalid message format: %v", msgs[0])
+	}
+	if got := first["role"]; got != "system" {
+		t.Fatalf("expected role %q, got %q", "system", got)
+	}
+}
+
