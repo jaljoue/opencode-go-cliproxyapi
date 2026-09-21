@@ -974,6 +974,11 @@ func (r *ResponsesRequest) DecodeInputItems() ([]RespItem, *errclass.Error) {
 	if err := json.Unmarshal(r.Input, &items); err != nil {
 		return nil, errclass.Translation("input must be a string or an array of items: " + err.Error())
 	}
+	for i := range items {
+		if items[i].Type == "" && strings.TrimSpace(items[i].Role) != "" {
+			items[i].Type = "message"
+		}
+	}
 	return items, nil
 }
 
