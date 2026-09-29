@@ -876,3 +876,15 @@ func TestBuildOpenAIRequestDeveloperRole(t *testing.T) {
 	}
 }
 
+func TestInHistorySystemRoleInMessages(t *testing.T) {
+	m := mustBuild(t, "claude", `{"messages":[{"role":"system","content":"sys-inturn"},{"role":"user","content":"hi"}]}`, nil)
+	msgs := m["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("want 2 messages, got %d: %v", len(msgs), msgs)
+	}
+	sys := msgs[0].(map[string]any)
+	if sys["role"] != "system" || sys["content"] != "sys-inturn" {
+		t.Fatalf("in-history system message wrong: %v", sys)
+	}
+}
+

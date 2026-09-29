@@ -183,3 +183,41 @@ func TestLiveResponsesStreamDoneEvents(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveInHistorySystemRoleInMessages verifies that a Messages request
+// containing an in-history system message inside the messages array
+// succeeds (HTTP 200) instead of failing validation.
+func TestLiveInHistorySystemRoleInMessages(t *testing.T) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	payload := map[string]any{
+		"model": modelID("glm-5.2"),
+		"messages": []map[string]any{
+			{"role": "user", "content": "hello"},
+			{"role": "system", "content": []map[string]string{{"type": "text", "text": "environment reminder"}}},
+			{"role": "user", "content": "say ok"},
+		},
+		"max_tokens": 16,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, cpaHost+"/v1/messages", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("x-api-key", cpaKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
+	}
+}

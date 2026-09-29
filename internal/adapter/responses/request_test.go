@@ -505,6 +505,23 @@ func TestClaudeUnknownRoleRejected(t *testing.T) {
 	}
 }
 
+// Red reproduction: in-history role:"system" turns must convert to Responses
+// format without error (system content appended to instructions or input).
+func TestInHistorySystemRoleInClaudeMessages(t *testing.T) {
+	body := []byte(`{"max_tokens":10,"system":"top","messages":[` +
+		`{"role":"user","content":"hi"},{"role":"system","content":"mid-history"}]}`)
+	m := decodeReq(t, mustBuild(t, "m", "claude", body, nil))
+	if instr, _ := m["instructions"].(string); strings.Contains(instr, "mid-history") {
+		return
+	}
+	for _, item := range inputItems(t, m) {
+		if strings.Contains(fmt.Sprintf("%v", item), "mid-history") {
+			return
+		}
+	}
+	t.Fatalf("in-history system content lost: %v", m)
+}
+
 // FR-005 drift fix (shared.ClaudeMaxTokens): an absent or non-positive
 // max_tokens defaults to 4096 instead of failing translation — the same
 // policy the Chat Completions leg applies.
