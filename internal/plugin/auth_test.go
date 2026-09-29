@@ -34,6 +34,24 @@ func TestAuthProviderParseAndRefresh(t *testing.T) {
 	}
 }
 
+func TestAuthProviderExposesEmailMetadata(t *testing.T) {
+	p := authProvider{}
+	parsed, err := p.ParseAuth(context.Background(), pluginapi.AuthParseRequest{
+		Provider: ProviderID,
+		RawJSON:  []byte(`{"type":"opencode-go","id":"k","api_key":"sk-email-key","email":" user@example.com "}`),
+	})
+	if err != nil || parsed.Auth.Metadata["email"] != "user@example.com" || parsed.Auth.Attributes["api_key"] != "sk-email-key" {
+		t.Fatalf("parsed auth = %#v, err=%v", parsed, err)
+	}
+	plain, err := p.ParseAuth(context.Background(), pluginapi.AuthParseRequest{
+		Provider: ProviderID,
+		RawJSON:  []byte(`{"type":"opencode-go","api_key":"sk-plain-key"}`),
+	})
+	if err != nil || plain.Auth.Metadata != nil {
+		t.Fatalf("auth without email = %#v, err=%v", plain, err)
+	}
+}
+
 func TestAuthProviderAliasesAndFilenameFallback(t *testing.T) {
 	p := authProvider{}
 	parsed, err := p.ParseAuth(context.Background(), pluginapi.AuthParseRequest{

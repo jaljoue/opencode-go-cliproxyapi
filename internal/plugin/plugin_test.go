@@ -388,6 +388,27 @@ func TestBridgeAuthSaveWireAndRedactsFailures(t *testing.T) {
 	}
 }
 
+func TestBridgeAuthGetWireAndRedactsFailures(t *testing.T) {
+	secret := "sk-auth-get-secret"
+	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
+		var req pluginapi.HostAuthGetRequest
+		if method != pluginabi.MethodHostAuthGet || json.Unmarshal(payload, &req) != nil || req.AuthIndex != "3" {
+			t.Errorf("auth get wire = %s %s", method, payload)
+		}
+		return hostOK(pluginapi.HostAuthGetResponse{AuthIndex: "3", Name: "k.json", JSON: json.RawMessage(`{"api_key":"` + secret + `"}`)}), nil
+	}}
+	got, err := NewHostBridge(f.call).AuthGet(context.Background(), "3")
+	if err != nil || got.Name != "k.json" || string(got.JSON) != `{"api_key":"`+secret+`"}` {
+		t.Fatalf("AuthGet = %+v, err=%v", got, err)
+	}
+	_, err = NewHostBridge((&fakeCaller{responder: func(string, []byte) ([]byte, error) {
+		return hostErr("denied", "host echoed "+secret), nil
+	}}).call).AuthGet(context.Background(), "3")
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "host auth get failed") {
+		t.Fatalf("redacted auth get error = %v", err)
+	}
+}
+
 func TestBridgeAuthListDecodesEntries(t *testing.T) {
 	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
 		if method != pluginabi.MethodHostAuthList {

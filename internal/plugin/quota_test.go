@@ -54,10 +54,47 @@ func TestQuotaListDoesNotCallHost(t *testing.T) {
 	}
 }
 
-func TestQuotaRefresh(t *testing.T) {
-	const key = "quota-refresh-secret"
-	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
-		if method != pluginabi.MethodHostHTTPDo {
+const (
+	quotaStatusURL    = "https://console.test/console/api/go/status"
+	quotaMembersURL   = "https://console.test/console/api/v1/budgets/members"
+	quotaUsageBody    = `{"usage":{"rolling":{"status":"ok","percent":9,"resetsAt":"2026-09-05T12:20:04Z"},"weekly":{"status":"ok","percent":12,"resetsAt":"2026-09-10T00:00:00Z"},"monthly":{"status":"ok","percent":6,"resetsAt":"2026-10-01T00:00:00Z"}}}`
+	goPlusStatusBody  = `{"subscriberUserId":"acc_sub","product":"go-plus","renewalProduct":"go-plus","access":{"meters":{"week":{"limitMicroCents":"12000000000","usedMicroCents":"0"}}}}`
+	budgetMembersBody = `[{"user_id":"acc_team","email":"teammate@example.com"},{"user_id":"acc_sub","email":"subscriber@example.com","limit_micro_cents":null}]`
+)
+
+// quotaFixture serves the usage and Console endpoints for one key plus the
+// CPA auth record callbacks for its credential. The Console lives on its own
+// host so a request built from base-url cannot reach it.
+type quotaFixture struct {
+	key      string
+	entry    pluginapi.HostAuthFileEntry
+	record   string         // stored auth JSON returned by host.auth.get
+	statuses map[string]int // non-200 status per URL
+}
+
+func newQuotaFixture(key string) quotaFixture {
+	id, _ := quotaIdentity(key)
+	return quotaFixture{
+		key:    key,
+		entry:  pluginapi.HostAuthFileEntry{ID: id, AuthIndex: "7", Name: id + ".json"},
+		record: `{"type":"opencode-go","id":"` + id + `","api_key":"` + key + `","priority":3,"note":"keep"}`,
+	}
+}
+
+func (q quotaFixture) respond(t *testing.T) func(string, []byte) ([]byte, error) {
+	bodies := map[string]string{
+		"https://quota.test/v1/usage": quotaUsageBody,
+		quotaStatusURL:                goPlusStatusBody,
+		quotaMembersURL:               budgetMembersBody,
+	}
+	return func(method string, payload []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostAuthList:
+			return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{q.entry}}), nil
+		case pluginabi.MethodHostAuthGet:
+			return hostOK(pluginapi.HostAuthGetResponse{AuthIndex: q.entry.AuthIndex, Name: q.entry.Name, JSON: json.RawMessage(q.record)}), nil
+		case pluginabi.MethodHostHTTPDo:
+		default:
 			return hostOK(map[string]any{}), nil
 		}
 		var wire struct {
@@ -65,24 +102,147 @@ func TestQuotaRefresh(t *testing.T) {
 			URL     string      `json:"url"`
 			Headers http.Header `json:"headers"`
 		}
-		if err := json.Unmarshal(payload, &wire); err != nil || wire.Method != http.MethodGet || wire.URL != "https://quota.test/v1/usage" || wire.Headers.Get("Authorization") != "Bearer "+key || wire.Headers.Get("Accept") != "application/json" {
-			t.Fatalf("bad quota request: %s", payload)
+		if err := json.Unmarshal(payload, &wire); err != nil || wire.Method != http.MethodGet || wire.Headers.Get("Authorization") != "Bearer "+q.key || wire.Headers.Get("Accept") != "application/json" {
+			t.Errorf("bad quota request: %s", payload)
+			return hostErr("test", "bad request"), nil
 		}
-		return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"usage":{"rolling":{"status":"ok","percent":9,"resetsAt":"2026-09-05T12:20:04Z"},"weekly":{"status":"ok","percent":12,"resetsAt":"2026-09-10T00:00:00Z"},"monthly":{"status":"ok","percent":6,"resetsAt":"2026-10-01T00:00:00Z"}}}`)}), nil
-	}}
+		body, ok := bodies[wire.URL]
+		if !ok {
+			t.Errorf("unexpected quota url %s", wire.URL)
+			return hostErr("test", "unrouted"), nil
+		}
+		if status := q.statuses[wire.URL]; status != 0 {
+			return hostOK(pluginapi.HTTPResponse{StatusCode: status, Body: []byte(`{"_tag":"Forbidden"}`)}), nil
+		}
+		return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(body)}), nil
+	}
+}
+
+func quotaManager(key string, responder func(string, []byte) ([]byte, error)) (*Manager, *fakeCaller) {
+	f := &fakeCaller{responder: responder}
 	m := NewManager(NewHostBridge(f.call))
-	m.cfg = config.Config{BaseURL: "https://quota.test/v1/", RequestTimeout: config.DefaultRequestTimeout, APIKeys: []config.APIKey{{Value: key}}}
+	m.cfg = config.Config{BaseURL: "https://quota.test/v1/", ConsoleURL: "https://console.test/console", RequestTimeout: config.DefaultRequestTimeout, APIKeys: []config.APIKey{{Value: key}}}
+	return m, f
+}
+
+func refreshQuota(t *testing.T, m *Manager, key string) (pluginapi.ManagementResponse, quotaCard) {
+	t.Helper()
 	id, _ := quotaIdentity(key)
 	resp, err := m.HandleManagement(context.Background(), pluginapi.ManagementRequest{Method: http.MethodPost, Path: "/v0/management/plugins/" + pluginName + "/quota-usage", Body: []byte(`{"key_id":"` + id + `"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got quotaCard
-	if err := json.Unmarshal(resp.Body, &got); err != nil {
-		t.Fatal(err)
+	var card quotaCard
+	if err := json.Unmarshal(resp.Body, &card); err != nil {
+		t.Fatalf("quota body %s: %v", resp.Body, err)
 	}
+	return resp, card
+}
+
+func TestQuotaRefresh(t *testing.T) {
+	const key = "quota-refresh-secret"
+	fixture := newQuotaFixture(key)
+	m, f := quotaManager(key, fixture.respond(t))
+	_, got := refreshQuota(t, m, key)
 	if got.Usage == nil || got.Usage.Rolling.Percent != 9 || got.Usage.Weekly.ResetsAt != "2026-09-10T00:00:00Z" || got.Usage.Monthly.Percent != 6 {
 		t.Fatalf("usage = %+v", got.Usage)
+	}
+	if got.PlanType != "go-plus" || got.Email != "subscriber@example.com" {
+		t.Fatalf("account = plan %q email %q", got.PlanType, got.Email)
+	}
+	gets := f.callsOf(pluginabi.MethodHostAuthGet)
+	if len(gets) != 1 || !strings.Contains(string(gets[0].payload), `"auth_index":"7"`) {
+		t.Fatalf("auth get calls = %v", gets)
+	}
+	saves := f.callsOf(pluginabi.MethodHostAuthSave)
+	if len(saves) != 1 {
+		t.Fatalf("auth saves = %d, want 1", len(saves))
+	}
+	var wire pluginapi.HostAuthSaveRequest
+	var saved map[string]any
+	if err := json.Unmarshal(saves[0].payload, &wire); err != nil || json.Unmarshal(wire.JSON, &saved) != nil {
+		t.Fatalf("auth save payload = %s", saves[0].payload)
+	}
+	if wire.Name != fixture.entry.Name || saved["email"] != "subscriber@example.com" || saved["api_key"] != key || saved["priority"] != float64(3) || saved["note"] != "keep" || saved["type"] != ProviderID {
+		t.Fatalf("saved record %q = %v", wire.Name, saved)
+	}
+}
+
+func TestQuotaInferenceKeyKeepsUsage(t *testing.T) {
+	const key = "quota-inference-secret"
+	fixture := newQuotaFixture(key)
+	fixture.statuses = map[string]int{quotaStatusURL: http.StatusForbidden, quotaMembersURL: http.StatusForbidden}
+	m, f := quotaManager(key, fixture.respond(t))
+	resp, got := refreshQuota(t, m, key)
+	if resp.StatusCode != 0 || got.Usage == nil || got.Usage.Weekly.Percent != 12 {
+		t.Fatalf("refresh = %d %s", resp.StatusCode, resp.Body)
+	}
+	if strings.Contains(string(resp.Body), "plan_type") || strings.Contains(string(resp.Body), "email") {
+		t.Fatalf("inference-only key reported account fields: %s", resp.Body)
+	}
+	if len(f.callsOf(pluginabi.MethodHostAuthList)) != 0 || len(f.callsOf(pluginabi.MethodHostAuthSave)) != 0 {
+		t.Fatalf("auth record touched without an email: %v", f.recorded())
+	}
+}
+
+func TestQuotaEmailPersistenceSkipsUnneededWrites(t *testing.T) {
+	const key = "quota-persist-secret"
+	for name, edit := range map[string]func(*quotaFixture){
+		"already listed": func(q *quotaFixture) { q.entry.Email = "subscriber@example.com" },
+		"disabled":       func(q *quotaFixture) { q.entry.Disabled = true },
+		"no record": func(q *quotaFixture) {
+			q.entry.ID, q.entry.Name = "opencode-go-key-other", "opencode-go-key-other.json"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newQuotaFixture(key)
+			edit(&fixture)
+			m, f := quotaManager(key, fixture.respond(t))
+			if _, got := refreshQuota(t, m, key); got.Email != "subscriber@example.com" {
+				t.Fatalf("email = %q", got.Email)
+			}
+			if len(f.callsOf(pluginabi.MethodHostAuthGet)) != 0 || len(f.callsOf(pluginabi.MethodHostAuthSave)) != 0 {
+				t.Fatalf("unexpected auth record write: %v", f.recorded())
+			}
+		})
+	}
+}
+
+func TestQuotaEmailPersistenceFailureKeepsRefresh(t *testing.T) {
+	const key = "quota-persist-failure-secret"
+	fixture := newQuotaFixture(key)
+	base := fixture.respond(t)
+	m, f := quotaManager(key, func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthGet {
+			return hostErr("missing", "auth file not found for "+key), nil
+		}
+		return base(method, payload)
+	})
+	resp, got := refreshQuota(t, m, key)
+	if resp.StatusCode != 0 || got.Email != "subscriber@example.com" || got.PlanType != "go-plus" {
+		t.Fatalf("refresh = %d %s", resp.StatusCode, resp.Body)
+	}
+	logs := f.callsOf(pluginabi.MethodHostLog)
+	if len(logs) != 1 || strings.Contains(string(logs[0].payload), key) || len(f.callsOf(pluginabi.MethodHostAuthSave)) != 0 {
+		t.Fatalf("logs = %v saves = %d", logs, len(f.callsOf(pluginabi.MethodHostAuthSave)))
+	}
+}
+
+func TestSubscriberEmail(t *testing.T) {
+	members := []budgetMember{{UserID: "acc_a", Email: "a@example.com"}, {UserID: "acc_b", Email: " b@example.com "}}
+	for _, tc := range []struct {
+		name, subscriber, want string
+		members                []budgetMember
+	}{
+		{"subscriber match", "acc_b", "b@example.com", members},
+		{"unknown subscriber in shared workspace", "acc_c", "", members},
+		{"no subscriber in shared workspace", "", "", members},
+		{"single member", "", "a@example.com", members[:1]},
+		{"no members", "acc_a", "", nil},
+	} {
+		if got := subscriberEmail(tc.members, tc.subscriber); got != tc.want {
+			t.Errorf("%s: email = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -161,7 +321,9 @@ func TestQuotaPageUsesManualSessionCache(t *testing.T) {
 		"catch (_) {}",
 		"Object.entries(cache)",
 		"values.set(keyID, entry.usage)",
-		"cache[card.key_id] = {usage: result.usage, fetched_at: timestamp}",
+		"accounts.set(keyID, account(entry))",
+		"cache[card.key_id] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp}",
+		"accounts.delete(keyID)",
 		"delete cache[keyID]",
 		"new Set(cards.map(card => card.key_id))",
 		"toLocaleString",

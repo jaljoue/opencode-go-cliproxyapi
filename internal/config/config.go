@@ -16,6 +16,7 @@ import (
 // Defaults (spec 04 §2/§4).
 const (
 	DefaultBaseURL          = "https://opencode.ai/zen/go/v1"
+	DefaultConsoleURL       = "https://opencode.ai/console"
 	DefaultModelPrefix      = "opencode-go"
 	DefaultRefreshInterval  = 15 * time.Minute
 	DefaultRequestTimeout   = 5 * time.Minute
@@ -51,6 +52,7 @@ type Config struct {
 	StripHostedWebSearch bool
 	BaseURL              string
 	CatalogURL           string
+	ConsoleURL           string
 	ModelPrefix          ModelPrefix
 	APIKeys              []APIKey
 	Catalog              Catalog
@@ -68,6 +70,7 @@ type rawConfig struct {
 	StripHostedWebSearch *bool                    `yaml:"strip-hosted-web-search"`
 	BaseURL              *string                  `yaml:"base-url"`
 	CatalogURL           *string                  `yaml:"catalog-url"`
+	ConsoleURL           *string                  `yaml:"console-url"`
 	ModelPrefix          rawPrefix                `yaml:"model-prefix"`
 	APIKeys              []rawKey                 `yaml:"api-keys"`
 	Catalog              rawCatalog               `yaml:"catalog"`
@@ -132,6 +135,9 @@ func Load(yamlBytes []byte) (Config, error) {
 	c := Config{
 		StripHostedWebSearch: orDefault(raw.StripHostedWebSearch, true),
 		BaseURL:              orDefault(raw.BaseURL, DefaultBaseURL),
+		// The Console is not under the inference base-url, so it never derives
+		// from it.
+		ConsoleURL: strings.TrimRight(orDefault(raw.ConsoleURL, DefaultConsoleURL), "/"),
 		ModelPrefix: ModelPrefix{
 			Enabled: orDefault(raw.ModelPrefix.Enabled, true),
 			Value:   orDefault(raw.ModelPrefix.Value, DefaultModelPrefix),
@@ -177,6 +183,9 @@ func (c Config) validate() error {
 		return err
 	}
 	if err := validateURL("catalog-url", c.CatalogURL, c.AllowHTTP); err != nil {
+		return err
+	}
+	if err := validateURL("console-url", c.ConsoleURL, c.AllowHTTP); err != nil {
 		return err
 	}
 	if len(c.APIKeys) == 0 {

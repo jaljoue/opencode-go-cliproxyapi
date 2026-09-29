@@ -34,6 +34,9 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if c.CatalogURL != "https://opencode.ai/zen/go/v1/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
 	}
+	if c.ConsoleURL != "https://opencode.ai/console" {
+		t.Errorf("ConsoleURL = %q", c.ConsoleURL)
+	}
 	if !c.ModelPrefix.Enabled || c.ModelPrefix.Value != "opencode-go" {
 		t.Errorf("ModelPrefix = %+v", c.ModelPrefix)
 	}
@@ -67,6 +70,7 @@ enabled: true
 future-key: 1
 base-url: http://localhost:9090/v1
 catalog-url: https://example.com/models
+console-url: http://localhost:9091/console
 model-prefix:
   enabled: true
   value: myprefix
@@ -97,6 +101,9 @@ strip-hosted-web-search: false
 	}
 	if c.CatalogURL != "https://example.com/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
+	}
+	if c.ConsoleURL != "http://localhost:9091/console" {
+		t.Errorf("ConsoleURL = %q", c.ConsoleURL)
 	}
 	if !c.ModelPrefix.Enabled || c.ModelPrefix.Value != "myprefix" {
 		t.Errorf("ModelPrefix = %+v", c.ModelPrefix)
@@ -157,6 +164,19 @@ func TestLoadDerivedCatalogURLFromCustomBase(t *testing.T) {
 	}
 	if c.CatalogURL != "https://upstream.example.com/api/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
+	}
+	if c.ConsoleURL != "https://opencode.ai/console" {
+		t.Errorf("ConsoleURL = %q, want the default regardless of base-url", c.ConsoleURL)
+	}
+}
+
+func TestLoadExplicitConsoleURLTrimsTrailingSlash(t *testing.T) {
+	c, err := Load([]byte("console-url: https://console.example.com/console/\n" + withKey))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if c.ConsoleURL != "https://console.example.com/console" {
+		t.Errorf("ConsoleURL = %q, want trailing slash trimmed", c.ConsoleURL)
 	}
 }
 
@@ -238,6 +258,9 @@ func TestLoadRejections(t *testing.T) {
 		},
 		{"explicitly empty base-url", `base-url: ""`, "base-url: must not be empty"},
 		{"explicitly empty catalog-url", `catalog-url: ""`, "catalog-url: must not be empty"},
+		{"explicitly empty console-url", `console-url: ""`, "console-url: must not be empty"},
+		{"http console-url without allow-http", "console-url: http://localhost:9091/console", "console-url: http scheme requires allow-http"},
+		{"console-url with query", "console-url: https://opencode.ai/console?org=x", "console-url: must not contain query"},
 		{"malformed base-url", `base-url: "::::"`, "base-url: invalid URL"},
 		{"scheme-less base-url", "base-url: opencode.ai/zen/go/v1", "base-url: invalid URL"},
 		{"malformed catalog-url", `catalog-url: "http://exa mple.com"`, "catalog-url: invalid URL"},

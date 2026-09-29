@@ -1442,6 +1442,25 @@ func TestExecuteInvalidAuthRejection(t *testing.T) {
 	})
 }
 
+func TestExecuteFallsBackToMetadataKey(t *testing.T) {
+	m, f := newExecManager(t)
+	b, _ := json.Marshal(executorRequest{ExecutorRequest: pluginapi.ExecutorRequest{
+		AuthProvider: ProviderID, AuthMetadata: map[string]any{"api_key": testKey},
+		Model: "opencode-go/glm-5.3", SourceFormat: "openai", OriginalRequest: []byte(ccRequestBody),
+	}})
+	resp, err := m.HandleCall("executor.execute", b)
+	if err != nil {
+		t.Fatalf("handle call: %v", err)
+	}
+	if env := decodeEnv(t, resp); !env.OK {
+		t.Fatalf("metadata-key envelope = %+v", env.Error)
+	}
+	headers, _ := lastWire(t, f, pluginabi.MethodHostHTTPDo)["headers"].(map[string]any)
+	if auth, _ := headers["Authorization"].([]any); len(auth) != 1 || auth[0] != "Bearer "+testKey {
+		t.Fatalf("Authorization = %v", headers["Authorization"])
+	}
+}
+
 func TestExecuteStreamInvalidAuthRejection(t *testing.T) {
 	m, f := newStreamManager(t, streamScript{})
 

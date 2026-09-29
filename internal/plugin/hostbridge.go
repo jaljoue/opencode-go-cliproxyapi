@@ -102,6 +102,25 @@ func (b *HostBridge) AuthList(ctx context.Context) ([]pluginapi.HostAuthFileEntr
 	return resp.Files, nil
 }
 
+// AuthGet returns the stored JSON of one CPA auth record. The JSON holds the
+// credential, so failures never carry host text.
+func (b *HostBridge) AuthGet(ctx context.Context, authIndex string) (pluginapi.HostAuthGetResponse, error) {
+	payload, _ := json.Marshal(pluginapi.HostAuthGetRequest{AuthIndex: authIndex})
+	raw, err := b.callWithTimeout(ctx, pluginabi.MethodHostAuthGet, payload)
+	if err != nil {
+		return pluginapi.HostAuthGetResponse{}, fmt.Errorf("host auth get failed")
+	}
+	env, err := decodeEnvelope(raw)
+	if err != nil || !env.OK {
+		return pluginapi.HostAuthGetResponse{}, fmt.Errorf("host auth get failed")
+	}
+	var resp pluginapi.HostAuthGetResponse
+	if json.Unmarshal(env.Result, &resp) != nil || len(resp.JSON) == 0 {
+		return pluginapi.HostAuthGetResponse{}, fmt.Errorf("host auth get failed: undecodable response body")
+	}
+	return resp, nil
+}
+
 // hostStreamIDReq addresses an existing stream by its ID.
 type hostStreamIDReq struct {
 	StreamID string `json:"stream_id"`

@@ -59,6 +59,12 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 		return nil, classEnvelope(&errclass.Error{Class: errclass.ClassAuth, Message: "selected auth provider is not opencode-go"})
 	}
 	key := strings.TrimSpace(req.AuthAttributes["api_key"])
+	if key == "" {
+		// Records CPA builds directly from a saved auth file (host.auth.save,
+		// Management Center edits) carry the key only in metadata.
+		metaKey, _ := req.AuthMetadata["api_key"].(string)
+		key = strings.TrimSpace(metaKey)
+	}
 	debugTrace("executor auth model=%s auth_id=%s provider=%s attr_api_key_present=%t attr_count=%d storage_json_bytes=%d", req.Model, req.AuthID, req.AuthProvider, key != "", len(req.AuthAttributes), len(req.StorageJSON))
 	if key == "" {
 		return nil, classEnvelope(&errclass.Error{Class: errclass.ClassAuth, Message: "selected auth has no api key"})

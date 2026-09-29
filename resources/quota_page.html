@@ -18,6 +18,8 @@
   --success-color: #188038;
   --warning-color: #b06000;
   --error-color: #b3261e;
+  --premium-color: #8a5a00;
+  --premium-bg: #f6ead0;
   --radius-md: 8px;
   --shadow: 0 1px 3px rgba(45, 42, 38, .12);
 }
@@ -40,6 +42,8 @@
   --border-color: #3c3833;
   --primary-color: #8f8981;
   --primary-hover: #a29b92;
+  --premium-color: #f0c86a;
+  --premium-bg: #3a2f1a;
   --shadow: 0 1px 3px rgba(0, 0, 0, .35);
 }
 * { box-sizing: border-box; }
@@ -53,7 +57,11 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 .quota-card { padding: 20px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-primary); box-shadow: var(--shadow); }
 .quota-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .credential-badge { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: var(--primary-color); font-size: 12px; font-weight: 700; }
+.credential-identity { min-width: 0; }
 .credential-name { margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: 16px; font-weight: 600; }
+.credential-sub { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.plan-badge { flex: none; margin-left: auto; padding: 2px 10px; border: 1px solid var(--border-color); border-radius: 999px; color: var(--text-secondary); background: var(--bg-tertiary); font-size: 12px; font-weight: 600; }
+.plan-premium { border-color: transparent; color: var(--premium-color); background: var(--premium-bg); }
 .quota-row { padding: 14px 0; border-top: 1px solid var(--border-color); }
 .quota-row-header, .quota-meta { display: flex; justify-content: space-between; gap: 12px; }
 .quota-label { font-weight: 600; text-transform: capitalize; }
@@ -76,7 +84,7 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 </head>
 <body>
 <div class="quota-page">
-  <header class="quota-header"><h1 class="quota-title">OpenCode Go Quota</h1><p class="quota-description">Usage for each configured credential. Refresh cards individually.</p></header>
+  <header class="quota-header"><h1 class="quota-title">OpenCode Go Quota</h1><p class="quota-description">Usage for each configured credential. Refresh cards individually. Plan and account email need an API key with All permissions.</p></header>
   <main id="app"><p class="quota-muted">Loading credentials...</p></main>
 </div>
 <script>
@@ -108,6 +116,7 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   const endpoint = "/v0/management/plugins/opencode-go-cliproxyapi/quota-usage";
   const storageKey = "opencode-go-cliproxyapi:quota";
   const values = new Map();
+  const accounts = new Map();
   const fetchedAt = new Map();
   let cache = {};
   try {
@@ -118,8 +127,15 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
   Object.entries(cache).forEach(([keyID, entry]) => {
     if (!entry || typeof entry !== "object" || !entry.usage || typeof entry.usage !== "object") return;
     values.set(keyID, entry.usage);
+    accounts.set(keyID, account(entry));
     if (typeof entry.fetched_at === "string") fetchedAt.set(keyID, entry.fetched_at);
   });
+  function account(source) {
+    return {plan_type: typeof source.plan_type === "string" ? source.plan_type : "", email: typeof source.email === "string" ? source.email : ""};
+  }
+  function planLabel(plan) {
+    return plan.split(/[-_\s]+/).filter(Boolean).map(word => word[0].toUpperCase() + word.slice(1)).join(" ");
+  }
   function saveCache() {
     try { sessionStorage.setItem(storageKey, JSON.stringify(cache)); } catch (_) {}
   }
@@ -169,7 +185,13 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
       const section = document.createElement("section"); section.className = "quota-card";
       const header = document.createElement("div"); header.className = "quota-card-header";
       const badge = document.createElement("span"); badge.className = "credential-badge"; badge.textContent = "OG"; badge.setAttribute("aria-hidden", "true");
-      const title = document.createElement("h2"); title.className = "credential-name"; title.textContent = card.label; header.append(badge, title); section.appendChild(header);
+      const info = accounts.get(card.key_id) || account({});
+      const identity = document.createElement("div"); identity.className = "credential-identity";
+      const title = document.createElement("h2"); title.className = "credential-name"; title.textContent = info.email || card.label; identity.appendChild(title);
+      if (info.email) { const sub = document.createElement("div"); sub.className = "credential-sub"; sub.textContent = card.label; identity.appendChild(sub); }
+      header.append(badge, identity);
+      if (info.plan_type) { const plan = document.createElement("span"); plan.className = info.plan_type === "go" ? "plan-badge" : "plan-badge plan-premium"; plan.textContent = planLabel(info.plan_type); header.appendChild(plan); }
+      section.appendChild(header);
       ["rolling", "weekly", "monthly"].forEach(name => {
         const row = document.createElement("div"); row.className = "quota-row";
         const rowHeader = document.createElement("div"); rowHeader.className = "quota-row-header"; const label = document.createElement("span"); label.className = "quota-label"; label.textContent = name; rowHeader.appendChild(label); row.appendChild(rowHeader);
@@ -182,13 +204,13 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
       const actions = document.createElement("div"); actions.className = "quota-actions";
       const button = document.createElement("button"); button.className = "quota-refresh"; button.textContent = "Refresh"; button.setAttribute("aria-label", "Refresh " + card.label);
       const error = document.createElement("span"); error.className = "quota-error"; error.setAttribute("role", "status");
-      button.onclick = () => { button.disabled = true; error.textContent = ""; request({key_id: card.key_id}).then(result => { const timestamp = new Date().toISOString(); values.set(card.key_id, result.usage); fetchedAt.set(card.key_id, timestamp); cache[card.key_id] = {usage: result.usage, fetched_at: timestamp}; saveCache(); render(cards); }).catch(err => { error.textContent = err.message || "Refresh failed"; button.disabled = false; }); };
+      button.onclick = () => { button.disabled = true; error.textContent = ""; request({key_id: card.key_id}).then(result => { const timestamp = new Date().toISOString(); const info = account(result); values.set(card.key_id, result.usage); accounts.set(card.key_id, info); fetchedAt.set(card.key_id, timestamp); cache[card.key_id] = {usage: result.usage, plan_type: info.plan_type, email: info.email, fetched_at: timestamp}; saveCache(); render(cards); }).catch(err => { error.textContent = err.message || "Refresh failed"; button.disabled = false; }); };
       actions.append(button, error); section.appendChild(actions); grid.appendChild(section);
     });
     app.appendChild(grid);
   }
   if (!auth()) { app.textContent = ""; const p = document.createElement("p"); p.className = "quota-error"; p.setAttribute("role", "status"); p.textContent = "Enable Remember password in Management Center to use this page."; app.appendChild(p); return; }
-  request({}).then(result => { const cards = result.cards || []; const configured = new Set(cards.map(card => card.key_id)); Object.keys(cache).forEach(keyID => { if (!configured.has(keyID)) { delete cache[keyID]; values.delete(keyID); fetchedAt.delete(keyID); } }); saveCache(); render(cards); }).catch(err => { app.textContent = ""; const p = document.createElement("p"); p.className = "quota-error"; p.setAttribute("role", "status"); p.textContent = err.message || "Unable to load credentials."; app.appendChild(p); });
+  request({}).then(result => { const cards = result.cards || []; const configured = new Set(cards.map(card => card.key_id)); Object.keys(cache).forEach(keyID => { if (!configured.has(keyID)) { delete cache[keyID]; values.delete(keyID); accounts.delete(keyID); fetchedAt.delete(keyID); } }); saveCache(); render(cards); }).catch(err => { app.textContent = ""; const p = document.createElement("p"); p.className = "quota-error"; p.setAttribute("role", "status"); p.textContent = err.message || "Unable to load credentials."; app.appendChild(p); });
 })();
 </script>
 </body>

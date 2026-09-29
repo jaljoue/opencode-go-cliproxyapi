@@ -32,6 +32,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **OpenCode Go Quota Page**: Management Center includes a separate `OpenCode Go Quota` page. Page load lists credentials without contacting OpenCode; each card is refreshed manually and independently, and quota values do not affect routing or CPA's native quota page.
+- **Plan and Account Email**: A quota refresh also reads the Go plan (`go`, `go-plus`) and the subscriber's email from the OpenCode Console (`{console-url}/api/go/status` and `{console-url}/api/v1/budgets/members`). These endpoints require an API key with **All** permissions; inference-only keys still get usage, without plan or email. The plan is informational and does not affect routing. The email is written to the credential's auth file so CPA lists it as the account, as it does for Claude and Codex.
 
 Responses clients such as Codex can supply function declarations in
 `input` items with `type: "additional_tools"`. The plugin merges these with
@@ -94,6 +95,9 @@ plugins:
       # Optional catalog endpoint override (default: "{base-url}/models")
       # catalog-url: "https://opencode.ai/zen/go/v1/models"
 
+      # OpenCode Console root for the quota page's plan and account email (default: "https://opencode.ai/console")
+      # console-url: "https://opencode.ai/console"
+
       # Client-facing model ID prefix configuration
       model-prefix:
         enabled: true           # true -> "opencode-go/<model>", false -> bare "<model>" (default: true)
@@ -136,6 +140,7 @@ plugins:
 | `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
 | `base-url` | `string` | `https://opencode.ai/zen/go/v1` | Upstream base URL. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
 | `catalog-url` | `string` | `{base-url}/models` | Full URL for catalog discovery. Defaults to `{base-url}/models`. |
+| `console-url` | `string` | `https://opencode.ai/console` | OpenCode Console root used by quota refreshes for the Go plan and account email. Independent of `base-url`. Same URL rules as `base-url`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
 | `model-prefix.value` | `string` | `opencode-go` | Provider prefix string when prefixing is enabled. |
 | `catalog.refresh-interval` | `duration` | `15m` | Interval between catalog polling refreshes (e.g. `15m`, `1h`). Minimum is `1m`. |
@@ -147,7 +152,7 @@ plugins:
 | `strip-hosted-web-search` | `bool` | `true` | Remove optional Responses `web_search` / `web_search_preview` declarations on Chat Completions and Messages routes. Hosted search is unavailable for those requests. Native Responses routes and client function tools are preserved. Set `false` for strict rejection. |
 | `request-timeout` | `duration` | `5m` | Upstream HTTP request timeout. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
-| `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` for local testing. |
+| `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` / `console-url` for local testing. |
 
 ## Testing
 

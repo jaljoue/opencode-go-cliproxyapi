@@ -23,6 +23,7 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 		ID       string `json:"id"`
 		Label    string `json:"label"`
 		APIKey   string `json:"api_key"`
+		Email    string `json:"email"`
 	}
 	if err := json.Unmarshal(req.RawJSON, &raw); err != nil {
 		if req.Provider == ProviderID {
@@ -40,10 +41,15 @@ func (authProvider) ParseAuth(_ context.Context, req pluginapi.AuthParseRequest)
 		raw.ID = req.FileName
 	}
 	debugTrace("auth parse handled provider=%s file=%s id=%s api_key_present=%t api_key_length=%d", req.Provider, req.FileName, raw.ID, strings.TrimSpace(raw.APIKey) != "", len(raw.APIKey))
-	return pluginapi.AuthParseResponse{Handled: true, Auth: pluginapi.AuthData{
+	auth := pluginapi.AuthData{
 		Provider: ProviderID, ID: raw.ID, FileName: req.FileName, Label: raw.Label, StorageJSON: req.RawJSON,
 		Attributes: map[string]string{"api_key": raw.APIKey},
-	}}, nil
+	}
+	// CPA reads the listed account email from auth metadata.
+	if email := strings.TrimSpace(raw.Email); email != "" {
+		auth.Metadata = map[string]any{"email": email}
+	}
+	return pluginapi.AuthParseResponse{Handled: true, Auth: auth}, nil
 }
 
 func (authProvider) StartLogin(context.Context, pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
