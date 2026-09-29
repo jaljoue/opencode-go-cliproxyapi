@@ -709,6 +709,44 @@ func (e ResponsesEventEmitter) ArgsDelta(itemID string, outputIndex int, delta s
 	})
 }
 
+// TextDone renders the output_text completion for the announced message
+// item, emitted before response.completed.
+func (e ResponsesEventEmitter) TextDone(itemID string, outputIndex int, text string) []byte {
+	return SSEEvent("response.output_text.done", map[string]any{
+		"type": "response.output_text.done", "item_id": itemID, "output_index": outputIndex, "content_index": 0, "text": text,
+	})
+}
+
+// ContentPartDone renders the content_part completion for the announced
+// message item, emitted before response.completed.
+func (e ResponsesEventEmitter) ContentPartDone(itemID string, outputIndex int, text string) []byte {
+	return SSEEvent("response.content_part.done", map[string]any{
+		"type": "response.content_part.done", "item_id": itemID, "output_index": outputIndex, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": text},
+	})
+}
+
+// ArgsDone renders the function_call_arguments completion for the
+// announced function_call item, emitted before response.completed; name
+// is included only when non-empty.
+func (e ResponsesEventEmitter) ArgsDone(itemID string, outputIndex int, name, args string) []byte {
+	payload := map[string]any{
+		"type": "response.function_call_arguments.done", "item_id": itemID, "output_index": outputIndex, "arguments": args,
+	}
+	if name != "" {
+		payload["name"] = name
+	}
+	return SSEEvent("response.function_call_arguments.done", payload)
+}
+
+// ItemDone renders the output_item completion for one rendered output
+// item, emitted before response.completed.
+func (e ResponsesEventEmitter) ItemDone(outputIndex int, item any) []byte {
+	return SSEEvent("response.output_item.done", map[string]any{
+		"type": "response.output_item.done", "output_index": outputIndex, "item": item,
+	})
+}
+
 // Completed renders the terminal response.completed event: status from the
 // route's status mapping, usage always attached (F-R6), and output items
 // rendered by the caller through OutputAssembler.

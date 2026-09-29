@@ -787,3 +787,78 @@ func TestStreamResponsesTextAggregationMatchesNonStream(t *testing.T) {
 		t.Errorf("aggregated message item wrong: %v", msgItem)
 	}
 }
+
+func TestStreamResponses_ItemDoneEvents(t *testing.T) {
+	sc := NewStreamConverter("openai-response")
+	events, done, eErr := feed(t, sc,
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":3}}}\n\n",
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+		"event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"f\"}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\n",
+		"event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	if !done {
+		t.Fatal("done not reached")
+	}
+	var names []string
+	for _, e := range events {
+		s := string(e)
+		if !strings.HasPrefix(s, "event: ") {
+			continue
+		}
+		name, _, _ := strings.Cut(s, "\n")
+		names = append(names, strings.TrimPrefix(name, "event: "))
+	}
+	wantTail := []string{
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if len(names) < len(wantTail) {
+		t.Fatalf("event names = %v, want tail %v", names, wantTail)
+	}
+	gotTail := names[len(names)-len(wantTail):]
+	if !reflect.DeepEqual(gotTail, wantTail) {
+		t.Fatalf("done-event sequence = %v, want %v (full: %v)", gotTail, wantTail, names)
+	}
+	byName := namedEvents(t, events)
+	textDone := byName["response.output_text.done"]
+	if len(textDone) != 1 || textDone[0]["item_id"] != "msg_1" ||
+		textDone[0]["output_index"] != float64(0) || textDone[0]["text"] != "hello" {
+		t.Errorf("output_text.done = %v", textDone)
+	}
+	partDone := byName["response.content_part.done"]
+	if len(partDone) != 1 || partDone[0]["item_id"] != "msg_1" ||
+		partDone[0]["output_index"] != float64(0) {
+		t.Errorf("content_part.done = %v", partDone)
+	} else if part, _ := partDone[0]["part"].(map[string]any); part["text"] != "hello" {
+		t.Errorf("content_part.done part = %v", partDone[0])
+	}
+	itemDone := byName["response.output_item.done"]
+	if len(itemDone) != 2 {
+		t.Fatalf("output_item.done count = %d: %v", len(itemDone), itemDone)
+	}
+	if itemDone[0]["output_index"] != float64(0) ||
+		itemDone[0]["item"].(map[string]any)["type"] != "message" {
+		t.Errorf("message output_item.done = %v", itemDone[0])
+	}
+	argsDone := byName["response.function_call_arguments.done"]
+	if len(argsDone) != 1 || argsDone[0]["item_id"] != "call_1" ||
+		argsDone[0]["output_index"] != float64(1) || argsDone[0]["arguments"] != "{\"a\":1}" {
+		t.Errorf("function_call_arguments.done = %v", argsDone)
+	}
+	if itemDone[1]["output_index"] != float64(1) {
+		t.Errorf("function_call output_item.done output_index = %v", itemDone[1])
+	} else if call, _ := itemDone[1]["item"].(map[string]any); call["type"] != "function_call" ||
+		call["call_id"] != "call_1" || call["name"] != "f" || call["arguments"] != "{\"a\":1}" {
+		t.Errorf("function_call output_item.done = %v", itemDone[1])
+	}
+}

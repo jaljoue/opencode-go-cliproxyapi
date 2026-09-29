@@ -123,15 +123,18 @@ func TestResponsesSynthesisRouteParity(t *testing.T) {
 	}
 	for _, want := range []string{
 		`response.created`, `response.output_item.added`, `response.output_text.delta`,
-		`response.function_call_arguments.delta`, `"model":"m1"`, `"status":"completed"`,
+		`response.function_call_arguments.delta`, `response.output_text.done`,
+		`response.content_part.done`, `response.output_item.done`,
+		`response.function_call_arguments.done`, `response.completed`,
+		`"model":"m1"`, `"status":"completed"`,
 		`"total_tokens":5`,
 	} {
 		if !strings.Contains(a, want) {
 			t.Errorf("synthesized stream missing %s", want)
 		}
 	}
-	if strings.Count(a, "data: ") != 7 {
-		t.Errorf("event count = %d, want 7 (created, 2 added, text delta, 2 args deltas, completed)",
+	if strings.Count(a, "data: ") != 12 {
+		t.Errorf("event count = %d, want 12 (created, 2 added, text delta, 2 args deltas, output_text.done, content_part.done, output_item.done, function_call_arguments.done, output_item.done, completed)",
 			strings.Count(a, "data: "))
 	}
 }

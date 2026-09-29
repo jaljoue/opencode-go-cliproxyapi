@@ -537,10 +537,38 @@ func TestStreamConverterResponses(t *testing.T) {
 		t.Fatalf("response.completed must be deferred past finish_reason: %v", evs)
 	}
 	evs = feedAll(t, sc, `data: {"choices":[{"delta":{},"finish_reason":"length"}]}`)
-	if len(evs) != 1 || evs[0].Name != "response.completed" {
-		t.Fatalf("completed event wrong: %v", evs)
+	completedIdx := -1
+	for i, e := range evs {
+		if e.Name == "response.completed" {
+			completedIdx = i
+		}
 	}
-	resp := evs[0].Data["response"].(map[string]any)
+	if completedIdx < 0 {
+		t.Fatalf("missing response.completed: %v", evs)
+	}
+	want := []string{
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if completedIdx+1 != len(want) || len(evs) != len(want) {
+		t.Fatalf("want %d terminal events ending in response.completed, got %v", len(want), evs)
+	}
+	for i, w := range want {
+		if evs[i].Name != w {
+			t.Fatalf("terminal event %d: want %q, got %q (full: %v)", i, w, evs[i].Name, evs)
+		}
+	}
+	if td := evs[0].Data; td["item_id"] != "r1" || td["output_index"] != float64(0) || td["text"] != "He" {
+		t.Fatalf("response.output_text.done wrong: %v", td)
+	}
+	if args := evs[3].Data; args["item_id"] != "c1" || args["output_index"] != float64(1) || args["arguments"] != `{"j":2}` {
+		t.Fatalf("response.function_call_arguments.done wrong: %v", args)
+	}
+	resp := evs[completedIdx].Data["response"].(map[string]any)
 	if resp["id"] != "r1" || resp["object"] != "response" || resp["status"] != "completed" {
 		t.Fatalf("completed response wrong: %v", resp)
 	}
@@ -944,10 +972,33 @@ func TestStreamConverterFlushAfterFinishWithoutDONE(t *testing.T) {
 			`data: {"id":"r2","choices":[{"delta":{"role":"assistant","content":"x"}}]}`,
 			`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4}}`)
 		flushed := parseEvents(t, sc.Flush())
-		if len(flushed) != 1 || flushed[0].Name != "response.completed" {
-			t.Fatalf("flush = %v", flushed)
+		completedIdx := -1
+		for i, e := range flushed {
+			if e.Name == "response.completed" {
+				completedIdx = i
+			}
 		}
-		resp := flushed[0].Data["response"].(map[string]any)
+		if completedIdx < 0 {
+			t.Fatalf("missing response.completed: %v", flushed)
+		}
+		want := []string{
+			"response.output_text.done",
+			"response.content_part.done",
+			"response.output_item.done",
+			"response.completed",
+		}
+		if completedIdx+1 != len(want) || len(flushed) != len(want) {
+			t.Fatalf("want %d terminal events ending in response.completed, got %v", len(want), flushed)
+		}
+		for i, w := range want {
+			if flushed[i].Name != w {
+				t.Fatalf("terminal event %d: want %q, got %q (full: %v)", i, w, flushed[i].Name, flushed)
+			}
+		}
+		if td := flushed[0].Data; td["item_id"] != "r2" || td["output_index"] != float64(0) || td["text"] != "x" {
+			t.Fatalf("response.output_text.done wrong: %v", td)
+		}
+		resp := flushed[completedIdx].Data["response"].(map[string]any)
 		u := resp["usage"].(map[string]any)
 		if u["input_tokens"] != float64(3) || u["output_tokens"] != float64(4) {
 			t.Fatalf("flushed completed usage wrong: %v", resp)
@@ -1004,4 +1055,91 @@ func TestStreamConverterFlushAfterFinishWithoutDONE(t *testing.T) {
 			t.Fatalf("second flush must return nothing: %v", again)
 		}
 	})
+}
+
+// BUG-01 reproduction (§2.2): the Responses terminal must close each output
+// item before response.completed — text done, part done, message done, args
+// done, function-call done — so strict clients (Codex) keep assistant output
+// and tool calls. Currently responsesTerminal emits only response.completed,
+// so this fails until Milestones 2 & 3 land.
+func TestStreamResponses_ItemDoneEvents(t *testing.T) {
+	sc := NewStreamConverter("openai-response")
+	evs := feedAll(t, sc,
+		`data: {"id":"r1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{\"a\":1}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}`,
+		`data: [DONE]`)
+
+	completedIdx := -1
+	for i, e := range evs {
+		if e.Name == "response.completed" {
+			completedIdx = i
+		}
+	}
+	if completedIdx < 0 {
+		t.Fatalf("missing response.completed: %v", evs)
+	}
+	want := []string{
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if completedIdx+1 < len(want) {
+		t.Fatalf("want %d terminal events ending in response.completed, got %d events: %v", len(want), len(evs), evs)
+	}
+	base := completedIdx + 1 - len(want)
+	for i, w := range want {
+		if evs[base+i].Name != w {
+			t.Fatalf("terminal event %d: want %q, got %q (full: %v)", i, w, evs[base+i].Name, evs)
+		}
+	}
+
+	textDone := evs[base].Data
+	if textDone["item_id"] != "r1" || textDone["output_index"] != float64(0) || textDone["text"] != "Hello" {
+		t.Fatalf("response.output_text.done wrong: %v", textDone)
+	}
+
+	partDone := evs[base+1].Data
+	if partDone["item_id"] != "r1" || partDone["output_index"] != float64(0) {
+		t.Fatalf("response.content_part.done identity wrong: %v", partDone)
+	}
+	part, ok := partDone["part"].(map[string]any)
+	if !ok || part["type"] != "output_text" || part["text"] != "Hello" {
+		t.Fatalf("response.content_part.done part wrong: %v", partDone)
+	}
+
+	msgDone := evs[base+2].Data
+	if msgDone["output_index"] != float64(0) {
+		t.Fatalf("message output_item.done index wrong: %v", msgDone)
+	}
+	msgItem, ok := msgDone["item"].(map[string]any)
+	if !ok || msgItem["type"] != "message" || msgItem["id"] != "r1" || msgItem["role"] != "assistant" {
+		t.Fatalf("message output_item.done item wrong: %v", msgDone)
+	}
+	msgContent, ok := msgItem["content"].([]any)
+	if !ok || len(msgContent) != 1 || msgContent[0].(map[string]any)["text"] != "Hello" {
+		t.Fatalf("message output_item.done content wrong: %v", msgItem)
+	}
+
+	argsDone := evs[base+3].Data
+	itemRef, _ := argsDone["item_id"].(string)
+	if itemRef == "" {
+		itemRef, _ = argsDone["call_id"].(string)
+	}
+	if itemRef != "c1" || argsDone["output_index"] != float64(1) || argsDone["arguments"] != `{"a":1}` {
+		t.Fatalf("response.function_call_arguments.done wrong: %v", argsDone)
+	}
+
+	fnDone := evs[base+4].Data
+	if fnDone["output_index"] != float64(1) {
+		t.Fatalf("function_call output_item.done index wrong: %v", fnDone)
+	}
+	fnItem, ok := fnDone["item"].(map[string]any)
+	if !ok || fnItem["type"] != "function_call" || fnItem["call_id"] != "c1" || fnItem["name"] != "f" || fnItem["arguments"] != `{"a":1}` {
+		t.Fatalf("function_call output_item.done item wrong: %v", fnDone)
+	}
 }

@@ -3,10 +3,12 @@
 package tests_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,5 +111,75 @@ func TestLiveResponsesUnsupportedItemDoesNotCoolDownAuth(t *testing.T) {
 	if validResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(validResp.Body)
 		t.Fatalf("expected HTTP 200 on subsequent request, got %d: %s (auth was cooled down!)", validResp.StatusCode, string(body))
+	}
+}
+
+// TestLiveResponsesStreamDoneEvents verifies that a streaming Responses
+// request emits item done events before response.completed, as required by
+// downstream clients like OpenAI Codex CLI.
+func TestLiveResponsesStreamDoneEvents(t *testing.T) {
+	client := &http.Client{Timeout: 60 * time.Second}
+	payload := map[string]any{
+		"model":             modelID("glm-5.2"),
+		"max_output_tokens": 16,
+		"stream":            true,
+		"input": []map[string]any{
+			{"role": "user", "content": "say ok"},
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, cpaHost+"/v1/responses", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cpaKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var events []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if rest, ok := strings.CutPrefix(line, "event: "); ok {
+			events = append(events, strings.TrimSpace(rest))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+
+	indexOf := func(name string) int {
+		for i, e := range events {
+			if e == name {
+				return i
+			}
+		}
+		return -1
+	}
+	completed := indexOf("response.completed")
+	if completed < 0 {
+		t.Fatalf("missing response.completed event (got %v)", events)
+	}
+	for _, want := range []string{"response.output_text.done", "response.content_part.done", "response.output_item.done"} {
+		idx := indexOf(want)
+		if idx < 0 {
+			t.Fatalf("missing %s event before response.completed (got %v)", want, events)
+		}
+		if idx > completed {
+			t.Fatalf("%s arrived after response.completed (events %v)", want, events)
+		}
 	}
 }

@@ -977,6 +977,53 @@ func TestResponsesEventEmitter(t *testing.T) {
 	}
 }
 
+// FR-006: item lifecycle completion events render before
+// response.completed — TextDone/ContentPartDone close the message text,
+// ArgsDone closes the function call arguments (name only when non-empty),
+// and ItemDone closes each rendered output item.
+func TestResponsesEventEmitterDoneEvents(t *testing.T) {
+	e := ResponsesEventEmitter{ID: "r1", Model: "m1"}
+
+	td := ssePayload(t, e.TextDone("msg_1", 0, "hej"))
+	if td["type"] != "response.output_text.done" || td["item_id"] != "msg_1" ||
+		td["output_index"] != float64(0) || td["content_index"] != float64(0) || td["text"] != "hej" {
+		t.Fatalf("text done = %v", td)
+	}
+
+	cp := ssePayload(t, e.ContentPartDone("msg_1", 0, "hej"))
+	if cp["type"] != "response.content_part.done" || cp["item_id"] != "msg_1" ||
+		cp["output_index"] != float64(0) || cp["content_index"] != float64(0) {
+		t.Fatalf("content part done = %v", cp)
+	}
+	part, ok := cp["part"].(map[string]any)
+	if !ok || part["type"] != "output_text" || part["text"] != "hej" {
+		t.Fatalf("content part = %v", cp["part"])
+	}
+
+	ad := ssePayload(t, e.ArgsDone("c1", 1, "lookup", `{"q":1}`))
+	if ad["type"] != "response.function_call_arguments.done" || ad["item_id"] != "c1" ||
+		ad["output_index"] != float64(1) || ad["name"] != "lookup" || ad["arguments"] != `{"q":1}` {
+		t.Fatalf("args done = %v", ad)
+	}
+	// Empty name omits the member entirely.
+	ad = ssePayload(t, e.ArgsDone("c1", 1, "", `{}`))
+	if _, ok := ad["name"]; ok {
+		t.Fatalf("empty name must be omitted: %v", ad)
+	}
+	if ad["arguments"] != `{}` {
+		t.Fatalf("args done = %v", ad)
+	}
+
+	item := map[string]any{"type": "message", "id": "msg_1"}
+	id := ssePayload(t, e.ItemDone(0, item))
+	if id["type"] != "response.output_item.done" || id["output_index"] != float64(0) {
+		t.Fatalf("item done = %v", id)
+	}
+	if !reflect.DeepEqual(id["item"], map[string]any{"type": "message", "id": "msg_1"}) {
+		t.Fatalf("item done item = %v", id["item"])
+	}
+}
+
 // msgItem is the message item Render synthesizes for the given text.
 func msgItem(id, text string) RespItem {
 	content, _ := json.Marshal([]outputTextPart{{Type: "output_text", Text: text}})

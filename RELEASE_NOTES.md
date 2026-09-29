@@ -1,13 +1,9 @@
 ## What's Changed
 
-### Features
-
-- Expose `ConfigFields` in plugin registration metadata, enabling interactive configuration editing in CLIProxyAPI Management Center for all plugin settings (`api-keys`, `base-url`, `catalog-url`, `model-prefix`, `catalog`, `protocols`, `route-overrides`, `request-timeout`, `max-response-bytes`, `allow-http`).
-- Add "Refresh All" button in quota page.
-
 ### Bug Fixes
 
-- Normalize `role: "developer"` to `role: "system"` in the chat-completions adapter, preventing DeepSeek-backed models from rejecting valid client requests with HTTP 400 ([#5](https://github.com/massiveits/opencode-go-cliproxyapi/issues/5)). Thanks to [@zlwu](https://github.com/zlwu).
+- Fix missing Responses stream item lifecycle completion events (output_text.done, content_part.done, function_call_arguments.done, output_item.done) prior to response.completed, resolving dropped assistant output and tool calls in OpenAI Codex CLI and strict Responses clients (credited to kanechoo and samaluk forks).
+
 
 ## Upgrade Notes
 
@@ -15,4 +11,4 @@
 - Restart CLIProxyAPI after replacing the plugin.
 - Hard-refresh Management Center if the plugin page looks stale.
 
-**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.8...v0.1.9
+**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.9...v0.1.10

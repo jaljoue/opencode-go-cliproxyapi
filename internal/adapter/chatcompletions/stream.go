@@ -542,5 +542,24 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 		}
 	}
 	usage := shared.NewResponsesUsageFrom(input, outputTokens, details)
-	return [][]byte{sc.responsesEm().Completed(status, usage, oa.Render())}
+	items := oa.Render()
+	em := sc.responsesEm()
+	var events [][]byte
+	for idx, item := range items {
+		v, ok := item.(shared.RespItem)
+		if !ok {
+			continue
+		}
+		switch v.Type {
+		case "message":
+			text := sc.respText.String()
+			events = append(events, em.TextDone(v.ID, idx, text))
+			events = append(events, em.ContentPartDone(v.ID, idx, text))
+			events = append(events, em.ItemDone(idx, v))
+		case "function_call":
+			events = append(events, em.ArgsDone(v.CallID, idx, v.Name, v.Arguments))
+			events = append(events, em.ItemDone(idx, v))
+		}
+	}
+	return append(events, em.Completed(status, usage, items))
 }
