@@ -121,7 +121,7 @@ func TestLiveResponsesStreamDoneEvents(t *testing.T) {
 	client := &http.Client{Timeout: 60 * time.Second}
 	payload := map[string]any{
 		"model":             modelID("glm-5.2"),
-		"max_output_tokens": 16,
+		"max_output_tokens": 256,
 		"stream":            true,
 		"input": []map[string]any{
 			{"role": "user", "content": "say ok"},
