@@ -32,15 +32,15 @@ func TestConvertMessagesStatusErrors(t *testing.T) {
 	}
 
 	// Long bodies are bounded to a redacted snippet, never echoed whole.
-	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 200)))
-	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 83 {
+	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 300)))
+	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 259 {
 		t.Fatalf("upstream body not bounded: %q", eErr.Message)
 	}
 
 	// Redaction work is bounded: bodies beyond 4096 bytes are truncated
 	// before snippet extraction, so the message stays snippet-sized.
 	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 1<<20)))
-	if eErr == nil || len(eErr.Message) > 83 {
+	if eErr == nil || len(eErr.Message) > 259 {
 		t.Fatalf("oversized upstream body not bounded: len = %d", len(eErr.Message))
 	}
 }

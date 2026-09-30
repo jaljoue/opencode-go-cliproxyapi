@@ -782,6 +782,33 @@ func TestExecuteStream4xxClosesUpstreamEntry(t *testing.T) {
 	}
 }
 
+func TestExecuteStream4xxExtractsUpstreamMessage(t *testing.T) {
+	errMsg := `{"error":{"message":"Invalid temperature: 999.0. Value must be between 0.0 and 2.0","type":"invalid_request_error"}}`
+	m, f := newStreamManager(t, streamScript{
+		startStatus: http.StatusBadRequest,
+		upstreamID:  "up-400",
+		frames:      []string{errMsg},
+	})
+	resp, err := m.HandleCall("executor.execute_stream",
+		execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), "down-9"))
+	if err != nil {
+		t.Fatalf("execute_stream: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if env.OK || env.Error == nil {
+		t.Fatalf("want error envelope, got: %+v", env)
+	}
+	if !strings.Contains(env.Error.Message, "Invalid temperature: 999.0") {
+		t.Fatalf("error message = %q, want upstream explanation", env.Error.Message)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamRead)); got != 1 {
+		t.Fatalf("stream reads = %d, want 1", got)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamClose)); got != 1 {
+		t.Fatalf("stream closes = %d, want 1", got)
+	}
+}
+
 func TestExecuteStreamOpenTransportError(t *testing.T) {
 	// Pre-first-byte network failure produces no downstream bytes and no stream
 	// lifecycle to clean up.
@@ -1332,7 +1359,7 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 		t.Fatalf("malformed passthrough = %v", eErr)
 	}
 	long := strings.Repeat("x", 300)
-	if got := shared.RedactedSnippet(long); got != long[:80]+"..." {
+	if got := shared.RedactedSnippet(long); got != long[:256]+"..." {
 		t.Fatalf("snippet truncation = %d chars", len(got))
 	}
 	if got := shared.RedactedSnippet("short"); got != "short" {

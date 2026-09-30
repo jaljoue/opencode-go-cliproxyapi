@@ -169,8 +169,8 @@ func TestStreamMalformedJSONRedactedSnippet(t *testing.T) {
 	if eErr == nil {
 		t.Fatal("want error")
 	}
-	// Shared RedactedSnippet truncates to 80 payload chars + "...".
-	if n := len(eErr.Message) - len("malformed SSE data JSON: "); n > 83 {
+	// Shared RedactedSnippet truncates to 256 payload chars + "...".
+	if n := len(eErr.Message) - len("malformed SSE data JSON: "); n > 259 {
 		t.Errorf("snippet too long: %d chars in %q", n, eErr.Message)
 	}
 	if !strings.HasSuffix(eErr.Message, "...") {

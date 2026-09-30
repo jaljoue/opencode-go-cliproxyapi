@@ -403,8 +403,12 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(errclass.FromNetwork(err)), nil
 	}
 	if st >= 400 {
-		_ = m.bridge.StreamClose(id)
-		return classEnvelope(errclass.FromStatus(st, "")), nil
+		var body []byte
+		if id != "" {
+			body, _, _, _ = m.bridge.StreamRead(id)
+			_ = m.bridge.StreamClose(id)
+		}
+		return classEnvelope(shared.UpstreamStatusError(st, body)), nil
 	}
 
 	downID := req.StreamID

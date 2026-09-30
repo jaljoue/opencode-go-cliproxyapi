@@ -35,8 +35,8 @@ func TestConvertNonStreamStatusErrors(t *testing.T) {
 	}
 
 	// Long bodies are bounded to a redacted snippet, never echoed whole.
-	_, eErr := ConvertNonStreamResponse("claude", 500, []byte(`{"error":"`+strings.Repeat("y", 200)+`"}`))
-	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 83 {
+	_, eErr := ConvertNonStreamResponse("claude", 500, []byte(`{"error":"`+strings.Repeat("y", 300)+`"}`))
+	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 259 {
 		t.Fatalf("upstream body not bounded: %q", eErr.Message)
 	}
 }

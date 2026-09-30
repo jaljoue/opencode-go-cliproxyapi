@@ -458,12 +458,12 @@ func TestStreamConverterClaudeVariants(t *testing.T) {
 	})
 	t.Run("malformed chunk errors with short snippet", func(t *testing.T) {
 		sc := NewStreamConverter("claude")
-		payload := `{"choices":[{"delta":{"content":"` + strings.Repeat("x", 200)
+		payload := `{"choices":[{"delta":{"content":"` + strings.Repeat("x", 300) + `TAIL_SHOULD_BE_TRUNCATED"`
 		_, _, eErr := sc.Feed([]byte("data: " + payload + "\n"))
 		if eErr == nil || eErr.Class != errclass.ClassTranslation {
 			t.Fatalf("want ClassTranslation, got %+v", eErr)
 		}
-		if len(eErr.Message) > 160 || strings.Contains(eErr.Message, payload[100:]) {
+		if len(eErr.Message) > 350 || strings.Contains(eErr.Message, "TAIL_SHOULD_BE_TRUNCATED") {
 			t.Fatalf("error echoes too much upstream body: %q", eErr.Message)
 		}
 	})
@@ -754,7 +754,7 @@ func TestStreamConverterTerminalReasonToolsOutrankLength(t *testing.T) {
 // stay bounded (§5 security: never an upstream body echo).
 func TestStreamConverterMalformedChunkRedactsBearer(t *testing.T) {
 	sc := NewStreamConverter("claude")
-	payload := `{"garbage":"prefix Bearer sk-secret123-token suffix ` + strings.Repeat("y", 200) + `"`
+	payload := `{"garbage":"prefix Bearer sk-secret123-token suffix ` + strings.Repeat("y", 300) + `"`
 	_, _, eErr := sc.Feed([]byte("data: " + payload + "\n"))
 	if eErr == nil || eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("want ClassTranslation, got %+v", eErr)
@@ -762,7 +762,7 @@ func TestStreamConverterMalformedChunkRedactsBearer(t *testing.T) {
 	if strings.Contains(eErr.Message, "sk-secret123") {
 		t.Fatalf("error leaks bearer token: %q", eErr.Message)
 	}
-	if len(eErr.Message) > 160 {
+	if len(eErr.Message) > 350 {
 		t.Fatalf("error not bounded: %d chars", len(eErr.Message))
 	}
 }

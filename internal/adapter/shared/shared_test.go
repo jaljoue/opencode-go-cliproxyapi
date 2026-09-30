@@ -305,9 +305,9 @@ func TestRedactedSnippet(t *testing.T) {
 	if got := RedactedSnippet("Bearer sk-secret-123 rest"); got != "Bearer [redacted] rest" {
 		t.Fatalf("redaction = %q", got)
 	}
-	long := strings.Repeat("a", 100)
+	long := strings.Repeat("a", 300)
 	got := RedactedSnippet(long)
-	if got != long[:80]+"..." {
+	if got != long[:256]+"..." {
 		t.Fatalf("truncation = %d chars, tail %q", len(got), got[len(got)-4:])
 	}
 	short := "plain text"
@@ -327,9 +327,9 @@ func TestUpstreamStatusError(t *testing.T) {
 
 	// Oversized bodies are truncated before snippet extraction, so the
 	// message stays snippet-sized regardless of body size.
-	for _, size := range []int{100, 4096, 4097, 1 << 20} {
+	for _, size := range []int{300, 4096, 4097, 1 << 20} {
 		e = UpstreamStatusError(500, []byte(strings.Repeat("x", size)))
-		if len(e.Message) > 83 || !strings.HasSuffix(e.Message, "...") {
+		if len(e.Message) > 259 || !strings.HasSuffix(e.Message, "...") {
 			t.Fatalf("size %d not bounded: %d chars", size, len(e.Message))
 		}
 	}
@@ -337,6 +337,27 @@ func TestUpstreamStatusError(t *testing.T) {
 	// Short bodies pass through as the whole redacted snippet.
 	if e := UpstreamStatusError(503, []byte("down")); e.Message != "down" {
 		t.Fatalf("short body = %q", e.Message)
+	}
+
+	// JSON error bodies extract clean human-readable error messages.
+	cases := []struct {
+		body []byte
+		want string
+	}{
+		{[]byte(`{"error":{"message":"Invalid temperature: 999.0"}}`), "Invalid temperature: 999.0"},
+		{[]byte(`{"error":"model not found"}`), "model not found"},
+		{[]byte(`{"message":"unauthorized access"}`), "unauthorized access"},
+		{[]byte(`{"detail":"rate limit exceeded"}`), "rate limit exceeded"},
+		{[]byte(`{"error":{"message":"Bearer sk-secret-123 failed"}}`), "Bearer [redacted] failed"},
+		{[]byte(`{"error":{"type":"invalid_request"}}`), `{"error":{"type":"invalid_request"}}`},
+		{[]byte(`{"other":123}`), `{"other":123}`},
+		{[]byte(``), ""},
+	}
+	for _, tc := range cases {
+		e := UpstreamStatusError(400, tc.body)
+		if e.Message != tc.want {
+			t.Errorf("UpstreamStatusError(400, %s) = %q, want %q", tc.body, e.Message, tc.want)
+		}
 	}
 }
 
