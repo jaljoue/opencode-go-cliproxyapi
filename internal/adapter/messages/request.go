@@ -288,6 +288,9 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 	req.Messages = b.msgs
 
 	for _, t := range src.Tools {
+		if t.Type == "namespace" {
+			continue
+		}
 		if eErr := shared.FunctionTool(t.Type, EndpointPath); eErr != nil {
 			return nil, eErr
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
 
@@ -1141,5 +1142,51 @@ func TestStreamResponses_ItemDoneEvents(t *testing.T) {
 	fnItem, ok := fnDone["item"].(map[string]any)
 	if !ok || fnItem["type"] != "function_call" || fnItem["call_id"] != "c1" || fnItem["name"] != "f" || fnItem["arguments"] != `{"a":1}` {
 		t.Fatalf("function_call output_item.done item wrong: %v", fnDone)
+	}
+}
+
+func TestStreamResponsesNamespaceRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"namespace","name":"subagents","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	sc := NewStreamConverter("openai-response", rt)
+	evs := feedAll(t, sc,
+		`data: {"id":"r1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"subagents__spawn_agent","arguments":"{}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`)
+	var added, argsDone, itemDone, completed map[string]any
+	for _, e := range evs {
+		switch e.Name {
+		case "response.output_item.added":
+			added = e.Data
+		case "response.function_call_arguments.done":
+			argsDone = e.Data
+		case "response.output_item.done":
+			itemDone = e.Data
+		case "response.completed":
+			completed = e.Data
+		}
+	}
+	if added == nil || argsDone == nil || itemDone == nil || completed == nil {
+		t.Fatalf("missing lifecycle events: added=%v argsDone=%v itemDone=%v completed=%v", added != nil, argsDone != nil, itemDone != nil, completed != nil)
+	}
+	if item := added["item"].(map[string]any); item["name"] != "spawn_agent" || item["namespace"] != "subagents" {
+		t.Fatalf("ItemAdded identity not restored: %v", item)
+	}
+	if argsDone["item_id"] != "c1" || argsDone["arguments"] != "{}" {
+		t.Fatalf("ArgsDone wrong: %v", argsDone)
+	}
+	if item := itemDone["item"].(map[string]any); item["name"] != "spawn_agent" || item["namespace"] != "subagents" {
+		t.Fatalf("ItemDone identity not restored: %v", item)
+	}
+	output := completed["response"].(map[string]any)["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("terminal output = %v", completed["response"])
+	}
+	if fc := output[0].(map[string]any); fc["name"] != "spawn_agent" || fc["namespace"] != "subagents" {
+		t.Fatalf("terminal identity not restored: %v", fc)
 	}
 }

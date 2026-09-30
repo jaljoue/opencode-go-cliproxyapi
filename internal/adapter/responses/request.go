@@ -35,7 +35,7 @@ var EndpointPath = catalog.RouteResponses.EndpointPath()
 // via the shared thinking package; nil falls back to the default ladder.
 // Unknown formats are ClassUnsupported; malformed input is
 // ClassTranslation; messages are descriptive and redacted.
-func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, _ ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai-response":
 		return shared.RewriteModelID(upstreamModel, sourceBody, "openai-response")

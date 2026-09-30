@@ -55,7 +55,7 @@ type respResultIn struct {
 // passes through; "openai" and "claude" are converted, preserving text,
 // function calls, terminal status, and usage. Unknown formats are
 // ClassUnsupported; malformed upstream bodies are ClassTranslation.
-func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte) ([]byte, *errclass.Error) {
+func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte, _ ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	if status >= 400 {
 		return nil, shared.UpstreamStatusError(status, upstreamBody)
 	}

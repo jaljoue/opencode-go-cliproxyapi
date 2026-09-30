@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
 
@@ -316,6 +317,28 @@ func TestConvertNonStreamResponsesLengthWithToolsIncomplete(t *testing.T) {
 		`{"id":"r1","model":"m","choices":[{"finish_reason":"length","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`)
 	if m["status"] != "incomplete" {
 		t.Fatalf("status = %v, want incomplete", m["status"])
+	}
+}
+
+func TestConvertNonStreamResponsesNamespaceRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"namespace","name":"subagents","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	upstream := `{"id":"r1","model":"m","choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"subagents__spawn_agent","arguments":"{}"}}]}}]}`
+	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(upstream), rt)
+	if eErr != nil {
+		t.Fatalf("Convert: %v", eErr)
+	}
+	m := decodeOut(t, out, nil)
+	output := m["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("want 1 output item, got %v", output)
+	}
+	fc := output[0].(map[string]any)
+	if fc["type"] != "function_call" || fc["name"] != "spawn_agent" || fc["namespace"] != "subagents" {
+		t.Fatalf("identity not restored: %v", fc)
 	}
 }
 

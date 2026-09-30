@@ -43,7 +43,7 @@ type StreamConverter struct {
 // NewStreamConverter builds a converter for sourceFormat ("openai",
 // "claude", "openai-response"); unknown formats fail on first Feed with
 // ClassUnsupported (same classes as BuildRequest).
-func NewStreamConverter(sourceFormat string) *StreamConverter {
+func NewStreamConverter(sourceFormat string, _ ...*shared.ResponseTools) *StreamConverter {
 	sc := &StreamConverter{
 		// wantRaw only for the openai-response passthrough, which
 		// forwards verbatim blocks; a rebuilt single data line would

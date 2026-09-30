@@ -579,6 +579,71 @@ func TestResponsesErrors(t *testing.T) {
 	}
 }
 
+func TestFromResponses_NamespaceChildUnrolls(t *testing.T) {
+	body := `{
+		"input": "hi",
+		"tools": [
+			{"type": "namespace", "name": "subagents", "tools": [
+				{"type": "function", "name": "spawn_agent", "description": "d", "parameters": {"type": "object"}}
+			]}
+		]
+	}`
+	out, eErr := BuildRequest("qwen", "openai-response", []byte(body), nil, shared.NewResponseTools())
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	m := decodeReq(t, out)
+	tools, ok := m["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 flattened tool, got %+v", m["tools"])
+	}
+	if tools[0].(map[string]any)["name"] != "subagents__spawn_agent" {
+		t.Fatalf("expected flattened subagents__spawn_agent, got %v", tools[0].(map[string]any)["name"])
+	}
+}
+
+func TestFromResponses_NamespaceToolIgnored(t *testing.T) {
+	body := `{
+		"input": "hello",
+		"tools": [
+			{"type": "function", "name": "f1", "parameters": {"type": "object"}},
+			{"type": "namespace", "name": "subagents", "tools": []}
+		]
+	}`
+	m, eErr := respReq(t, body)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	tools, ok := m["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %+v", m["tools"])
+	}
+	if tools[0].(map[string]any)["name"] != "f1" {
+		t.Fatalf("expected tool name f1, got %v", tools[0].(map[string]any)["name"])
+	}
+}
+
+func TestFromChatCompletions_NamespaceToolIgnored(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [
+			{"type": "function", "function": {"name": "f1", "parameters": {"type": "object"}}},
+			{"type": "namespace", "name": "subagents"}
+		]
+	}`
+	m, eErr := chatReq(t, body)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	tools, ok := m["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %+v", m["tools"])
+	}
+	if tools[0].(map[string]any)["name"] != "f1" {
+		t.Fatalf("expected tool name f1, got %v", tools[0].(map[string]any)["name"])
+	}
+}
+
 func TestResponsesDefaultInputSchema(t *testing.T) {
 	m, eErr := respReq(t, `{"input":[],"tools":[{"type":"function","name":"f"}]}`)
 	if eErr != nil {

@@ -706,6 +706,69 @@ func TestBuildRequestResponsesErrors(t *testing.T) {
 	}
 }
 
+func TestFromResponses_NamespaceChildUnrolls(t *testing.T) {
+	body := `{
+		"input": "hi",
+		"tools": [
+			{"type": "namespace", "name": "subagents", "tools": [
+				{"type": "function", "name": "spawn_agent", "description": "d", "parameters": {"type": "object"}}
+			]}
+		]
+	}`
+	out, eErr := BuildRequest("m", "openai-response", []byte(body), nil, shared.NewResponseTools())
+	m := decodeOut(t, out, eErr)
+	tools, ok := m["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 flattened tool, got %+v", m["tools"])
+	}
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "subagents__spawn_agent" {
+		t.Fatalf("expected flattened subagents__spawn_agent, got %v", fn["name"])
+	}
+}
+
+func TestFromResponses_NamespacedToolChoiceFlattened(t *testing.T) {
+	body := `{
+		"input": "hi",
+		"tools": [
+			{"type": "namespace", "name": "subagents", "tools": [
+				{"type": "function", "name": "spawn_agent", "description": "d", "parameters": {"type": "object"}}
+			]}
+		],
+		"tool_choice": {"type": "function", "name": "spawn_agent", "namespace": "subagents"}
+	}`
+	out, eErr := BuildRequest("m", "openai-response", []byte(body), nil, shared.NewResponseTools())
+	m := decodeOut(t, out, eErr)
+	tc, ok := m["tool_choice"].(map[string]any)
+	if !ok || tc["type"] != "function" {
+		t.Fatalf("tool_choice wrong shape: %v", m["tool_choice"])
+	}
+	fn, ok := tc["function"].(map[string]any)
+	if !ok || fn["name"] != "subagents__spawn_agent" {
+		t.Fatalf("expected flattened subagents__spawn_agent, got %v", m["tool_choice"])
+	}
+}
+
+func TestFromResponses_NamespaceToolIgnored(t *testing.T) {
+	body := `{
+		"input": "hello",
+		"tools": [
+			{"type": "function", "name": "f1", "parameters": {"type": "object"}},
+			{"type": "namespace", "name": "subagents", "tools": []}
+		]
+	}`
+	out := mustBuild(t, "openai-response", body, nil)
+	tools, ok := out["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %+v", out["tools"])
+	}
+	toolMap := tools[0].(map[string]any)
+	fn := toolMap["function"].(map[string]any)
+	if fn["name"] != "f1" {
+		t.Fatalf("expected tool name f1, got %v", fn["name"])
+	}
+}
+
 func TestResponsesReasoningEffortValidated(t *testing.T) {
 	// ts nil → default levels {low,medium,high}: unsupported value rejected
 	// naming it; a supported level forwards verbatim.

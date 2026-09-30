@@ -24,6 +24,11 @@ type ResponseTools struct {
 	names                map[string]responseToolIdentity
 }
 
+// NewResponseTools returns an empty context that strips nothing.
+func NewResponseTools() *ResponseTools {
+	return &ResponseTools{}
+}
+
 // Normalize merges top-level tools and additional_tools declarations, removes
 // declaration items from the conversation, and qualifies tool calls and choices.
 // First declaration wins for repeated identities, including across both sources.
