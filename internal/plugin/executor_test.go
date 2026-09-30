@@ -809,6 +809,51 @@ func TestExecuteStream4xxExtractsUpstreamMessage(t *testing.T) {
 	}
 }
 
+func TestExecuteStream4xxWatchdogUnblocksStalledRead(t *testing.T) {
+	unblocked := make(chan struct{})
+	f := &fakeCaller{}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+
+	f.responder = wrapWithCatalog(testCatalogJSON, func(method string, payload []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return hostOK(hostStreamStartResp{StatusCode: http.StatusBadRequest, StreamID: "up-stall"}), nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			<-unblocked
+			return hostOK(hostStreamReadResp{Error: "closed", Done: true}), nil
+		case pluginabi.MethodHostHTTPStreamClose:
+			select {
+			case <-unblocked:
+			default:
+				close(unblocked)
+			}
+			return hostOK(map[string]any{}), nil
+		default:
+			return hostOK(map[string]any{}), nil
+		}
+	})
+
+	shortTimeoutYAML := testValidYAML + "request-timeout: 20ms\n"
+	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(shortTimeoutYAML)); err != nil {
+		t.Fatalf("plugin.register: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := m.HandleCall("executor.execute_stream",
+		execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), "down-stall"))
+	if err != nil {
+		t.Fatalf("execute_stream: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if env.OK || env.Error == nil || env.Error.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("want 400 error envelope, got: %+v", env)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stalled read took too long to unblock: %v", elapsed)
+	}
+}
+
 func TestExecuteStreamOpenTransportError(t *testing.T) {
 	// Pre-first-byte network failure produces no downstream bytes and no stream
 	// lifecycle to clean up.

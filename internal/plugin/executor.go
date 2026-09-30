@@ -405,7 +405,11 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if st >= 400 {
 		var body []byte
 		if id != "" {
+			watchdog := time.AfterFunc(res.cfg.RequestTimeout, func() {
+				_ = m.bridge.StreamClose(id)
+			})
 			body, _, _, _ = m.bridge.StreamRead(id)
+			watchdog.Stop()
 			_ = m.bridge.StreamClose(id)
 		}
 		return classEnvelope(shared.UpstreamStatusError(st, body)), nil
