@@ -681,19 +681,7 @@ func (e ResponsesEventEmitter) Created() []byte {
 // call_id/name/arguments per the canonical call_id-only shape). Calls to
 // tools declared as custom are announced as custom_tool_call items.
 func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) []byte {
-	if item["type"] == "function_call" {
-		name, _ := item["name"].(string)
-		identity := e.Tools.identity(name)
-		item["name"] = identity.name
-		if identity.namespace != "" {
-			item["namespace"] = identity.namespace
-		}
-		if identity.custom {
-			item["type"] = "custom_tool_call"
-			item["input"] = ""
-			delete(item, "arguments")
-		}
-	}
+	e.Tools.RestoreCall(item)
 	return SSEEvent("response.output_item.added", map[string]any{
 		"type": "response.output_item.added", "output_index": outputIndex, "item": item,
 	})

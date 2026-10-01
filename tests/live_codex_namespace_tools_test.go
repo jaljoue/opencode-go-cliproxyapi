@@ -229,6 +229,63 @@ func TestLiveCodexNamespaceTools_StreamRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLiveCodexGrokReasoningReplayAccepted reproduces the Codex multi-turn
+// failure where the input contains a historical reasoning item with an
+// encrypted_content blob from a prior turn.  When pooled across accounts,
+// Grok cannot decrypt foreign blobs and returns HTTP 400 ("Could not decode
+// the compaction blob").  The plugin must strip reasoning items containing
+// encrypted_content before forwarding to non-GPT Responses models.
+//
+// RED: currently FAILS with HTTP 400 because the plugin preserves the item.
+func TestLiveCodexGrokReasoningReplayAccepted(t *testing.T) {
+	client := &http.Client{Timeout: 60 * time.Second}
+	payload := map[string]any{
+		"model": modelID("grok-4.6"),
+		"input": []map[string]any{
+			{
+				"type":    "message",
+				"role":    "user",
+				"content": []map[string]any{{"type": "input_text", "text": "say ok"}},
+			},
+			{
+				// Historical reasoning item from a prior turn — contains a
+				// pooled encrypted blob that Grok cannot decrypt.
+				"type":              "reasoning",
+				"id":                "rs_1",
+				"summary":           []any{},
+				"encrypted_content": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+			},
+			{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": "ok"}},
+			},
+		},
+		"max_output_tokens": 16,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, cpaHost+"/v1/responses", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cpaKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
 // TestLiveCodexCustomToolAccepted asserts that client custom tools (e.g. Codex exec)
 // and apply_patch are accepted rather than rejected with HTTP 400.
 func TestLiveCodexCustomToolAccepted(t *testing.T) {
@@ -275,4 +332,3 @@ func TestLiveCodexCustomToolAccepted(t *testing.T) {
 		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
 	}
 }
-

@@ -45,11 +45,15 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 		return nil, eErr
 	}
 	t.names = make(map[string]responseToolIdentity)
+	// Native Responses upstreams execute hosted tools themselves, so they
+	// pass through there and are only stripped on translated routes.
+	native := target == nativeResponsesEndpoint
+	strip := t.StripHostedWebSearch && !native
 	var tools []RespTool
 	strippedSearch := false
 	var add func(RespTool, string) *errclass.Error
 	add = func(tool RespTool, namespace string) *errclass.Error {
-		if t.StripHostedWebSearch && namespace == "" && isOptionalHostedTool(tool.Type) {
+		if strip && namespace == "" && isOptionalHostedTool(tool.Type) {
 			strippedSearch = true
 			return nil
 		}
@@ -69,6 +73,14 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 			}
 			return nil
 		}
+		if native && namespace == "" && tool.Type != "function" {
+			// tool_search and image_generation are OpenAI-hosted; other
+			// native Responses upstreams reject them.
+			if tool.Type != "tool_search" && tool.Type != "image_generation" {
+				tools = append(tools, tool)
+			}
+			return nil
+		}
 		if eErr := FunctionTool(tool.Type, target); eErr != nil {
 			return eErr
 		}
@@ -76,7 +88,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 			return errclass.Translation("function tool requires a name")
 		}
 		identity := responseToolIdentity{name: tool.Name, namespace: namespace, custom: custom}
-		name := qualifiedResponseToolName(tool.Name, namespace)
+		name := QualifiedResponseToolName(tool.Name, namespace)
 		if prev, ok := t.names[name]; ok {
 			if prev != identity {
 				return errclass.Translation("Responses tool names collide after namespace conversion")
@@ -110,7 +122,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	}
 	for i := range conversation {
 		item := &conversation[i]
-		if t.StripHostedWebSearch && item.Type == "web_search_call" {
+		if strip && item.Type == "web_search_call" {
 			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
 				Message: "hosted web_search history cannot be translated; start a new conversation or use a compatible Responses model"}
 		}
@@ -124,7 +136,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 			item.Type, item.Arguments, item.Input = "function_call", string(args), nil
 			fallthrough
 		case "function_call":
-			item.Name = qualifiedResponseToolName(item.Name, item.Namespace)
+			item.Name = QualifiedResponseToolName(item.Name, item.Namespace)
 			item.Namespace = ""
 		case "custom_tool_call_output":
 			item.Type = "function_call_output"
@@ -135,7 +147,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	if json.Unmarshal(r.ToolChoice, &choice) == nil && choice != nil {
 		var kind, name, namespace string
 		_ = json.Unmarshal(choice["type"], &kind)
-		if t.StripHostedWebSearch && isOptionalHostedTool(kind) {
+		if strip && isOptionalHostedTool(kind) {
 			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
 				Message: "tool_choice requires hosted " + kind + ", which this upstream route cannot execute"}
 		}
@@ -144,7 +156,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 				if json.Unmarshal(raw, &namespace) != nil || json.Unmarshal(choice["name"], &name) != nil || name == "" {
 					return nil, errclass.Translation("malformed namespaced tool_choice")
 				}
-				choice["name"], _ = json.Marshal(qualifiedResponseToolName(name, namespace))
+				choice["name"], _ = json.Marshal(QualifiedResponseToolName(name, namespace))
 				delete(choice, "namespace")
 				r.ToolChoice, _ = json.Marshal(choice)
 			}
@@ -176,6 +188,8 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	return conversation, nil
 }
 
+const nativeResponsesEndpoint = "/v1/responses"
+
 func isOptionalHostedTool(toolType string) bool {
 	switch toolType {
 	case "web_search", "web_search_preview", "tool_search", "image_generation":
@@ -201,7 +215,9 @@ func UnwrapCustomToolInput(args string) string {
 	return args
 }
 
-func qualifiedResponseToolName(name, namespace string) string {
+// QualifiedResponseToolName flattens a namespaced tool to the single
+// function name sent upstream; plain tools keep their name.
+func QualifiedResponseToolName(name, namespace string) string {
 	if namespace == "" {
 		return name
 	}
@@ -213,6 +229,45 @@ func qualifiedResponseToolName(name, namespace string) string {
 		qualified = qualified[:50] + "__" + hex.EncodeToString(digest[:6])
 	}
 	return qualified
+}
+
+// RestoreCall rewrites one Responses output item map in place when it is a
+// function_call to a flattened or custom tool: the original name and
+// namespace return, and custom tools become custom_tool_call items carrying
+// the unwrapped input. It reports whether the call targets a custom tool
+// and whether the item changed.
+func (t *ResponseTools) RestoreCall(item map[string]any) (custom, changed bool) {
+	if item["type"] != "function_call" {
+		return false, false
+	}
+	name, _ := item["name"].(string)
+	identity := t.identity(name)
+	changed = identity.custom || identity.name != name
+	item["name"] = identity.name
+	if identity.namespace != "" {
+		item["namespace"] = identity.namespace
+	}
+	if identity.custom {
+		args, _ := item["arguments"].(string)
+		item["type"] = "custom_tool_call"
+		item["input"] = UnwrapCustomToolInput(args)
+		delete(item, "arguments")
+	}
+	return identity.custom, changed
+}
+
+// Restores reports whether RestoreCall can change any call, so callers can
+// keep passthrough bodies byte-identical otherwise.
+func (t *ResponseTools) Restores() bool {
+	if t == nil {
+		return false
+	}
+	for wire, identity := range t.names {
+		if identity.custom || wire != identity.name {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *ResponseTools) identity(name string) responseToolIdentity {

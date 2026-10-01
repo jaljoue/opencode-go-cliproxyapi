@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
 
@@ -42,6 +43,38 @@ func TestConvertResponsesPassthrough(t *testing.T) {
 	if _, eErr := ConvertNonStreamResponse("openai-response", 200, []byte("{bad")); eErr == nil ||
 		eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("malformed passthrough = %v", eErr)
+	}
+}
+
+func TestConvertResponsesPassthroughCustomToolRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	r := &shared.ResponsesRequest{Tools: []shared.RespTool{{Type: "custom", Name: "exec"}}}
+	if _, eErr := rt.Normalize(r, EndpointPath); eErr != nil {
+		t.Fatalf("Normalize: %v", eErr)
+	}
+	body := `{"id":"resp_c","status":"completed","model":"m","output":[{"type":"function_call","call_id":"call_1","name":"exec","arguments":"{\"input\":\"ls -la\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}`
+	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(body), rt)
+	if eErr != nil {
+		t.Fatalf("convert: %v", eErr)
+	}
+	var doc struct {
+		Output []map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if len(doc.Output) != 1 || doc.Output[0]["type"] != "custom_tool_call" ||
+		doc.Output[0]["input"] != "ls -la" {
+		t.Fatalf("custom tool not restored: %s", out)
+	}
+	if _, has := doc.Output[0]["arguments"]; has {
+		t.Fatalf("arguments not deleted: %s", out)
+	}
+	// Non-custom tools pass through untouched (byte-identical).
+	plain := `{"id":"resp_f","status":"completed","model":"m","output":[{"type":"function_call","call_id":"call_1","name":"plain","arguments":"{}"}],"usage":{"input_tokens":1,"output_tokens":1}}`
+	out, eErr = ConvertNonStreamResponse("openai-response", 200, []byte(plain), rt)
+	if eErr != nil || string(out) != plain {
+		t.Fatalf("non-custom passthrough = %s %v", out, eErr)
 	}
 }
 

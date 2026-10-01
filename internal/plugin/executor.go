@@ -149,7 +149,7 @@ func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat strin
 	case catalog.RouteMessages:
 		return messages.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	case catalog.RouteResponses:
-		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts)
+		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	}
 	return nil, errclass.Translation("unsupported route")
 }
@@ -307,7 +307,7 @@ func convertNonStream(route catalog.Route, sourceFormat string, status int, body
 	case catalog.RouteMessages:
 		return messages.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	case catalog.RouteResponses:
-		return responses.ConvertNonStreamResponse(sourceFormat, status, body)
+		return responses.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	}
 	return nil, errclass.Translation("unsupported route")
 }
@@ -350,7 +350,7 @@ func newStreamConverter(route catalog.Route, sourceFormat string, tools ...*shar
 	case catalog.RouteMessages:
 		return messages.NewStreamConverter(sourceFormat, tools...)
 	case catalog.RouteResponses:
-		return responses.NewStreamConverter(sourceFormat)
+		return responses.NewStreamConverter(sourceFormat, tools...)
 	}
 	return chatcompletions.NewStreamConverter(sourceFormat, tools...)
 }
