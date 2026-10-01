@@ -677,31 +677,30 @@ func TestFromChatCompletionsImageInToolContentRejected(t *testing.T) {
 	}
 }
 
-// reasoning_effort is capability-gated like the reverse Responses→CC leg:
-// unsupported levels fail descriptively, supported ones forward normalized.
+// reasoning_effort passes through normalized without local validation:
+// unlisted levels forward as-is; upstream is the sole authority.
 func TestFromChatCompletionsEffortCapability(t *testing.T) {
 	body := []byte(`{"messages":[],"reasoning_effort":" XHIGH "}`)
-	if _, eErr := BuildRequest("m", "openai", body, nil); eErr == nil || eErr.Class != errclass.ClassUnsupported {
-		t.Fatalf("unsupported effort = %v, want ClassUnsupported", eErr)
+	m := decodeReq(t, mustBuild(t, "m", "openai", body, nil))
+	if r := m["reasoning"].(map[string]any); r["effort"] != "xhigh" {
+		t.Fatalf("passthrough effort = %v, want xhigh", r)
 	}
 	ts := &pluginapi.ThinkingSupport{Levels: []string{"low", "high", "xhigh"}}
-	m := decodeReq(t, mustBuild(t, "m", "openai", body, ts))
+	m = decodeReq(t, mustBuild(t, "m", "openai", body, ts))
 	r := m["reasoning"].(map[string]any)
 	if r["effort"] != "xhigh" {
 		t.Fatalf("supported effort = %v, want xhigh", r)
 	}
 }
 
-// Sentinels are capability-gated: a "none" the model does not declare and
-// the dynamic "auto" sentinel are omitted — Responses has no off-switch, so
-// omission is the no-forced-reasoning policy (matches the Messages-target
-// leg); declared levels forward.
+// Only the dynamic "auto" sentinel omits reasoning; every other effort
+// (including "none") forwards normalized without local validation.
 func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
 	ts := &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true}
 	m := decodeReq(t, mustBuild(t, "m", "openai",
 		[]byte(`{"messages":[],"reasoning_effort":"none"}`), ts))
-	if _, has := m["reasoning"]; has {
-		t.Fatalf("none must omit reasoning: %v", m["reasoning"])
+	if r, ok := m["reasoning"].(map[string]any); !ok || r["effort"] != "none" {
+		t.Fatalf("none must forward: %v", m["reasoning"])
 	}
 
 	m = decodeReq(t, mustBuild(t, "m", "openai",
@@ -723,6 +722,22 @@ func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
 // leg which forwards the identical validated value as-is (FR-005
 // no-silent-loss). The undeclared case stays pinned by
 // TestFromChatCompletionsEffortSentinelsOmitted.
+func TestFromChatCompletions_ReasoningEffortPassthroughWithoutValidation(t *testing.T) {
+	body := []byte(`{"messages":[],"reasoning_effort":"xhigh"}`)
+	out, eErr := BuildRequest("gpt-5", "openai", []byte(body), nil)
+	if eErr != nil {
+		t.Fatalf("BuildRequest err = %+v, want nil (passthrough xhigh)", eErr)
+	}
+	m := decodeReq(t, out)
+	r, ok := m["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("reasoning missing: %v", m)
+	}
+	if r["effort"] != "xhigh" {
+		t.Fatalf("reasoning.effort = %v, want xhigh", r["effort"])
+	}
+}
+
 func TestFromChatCompletionsEffortNoneDeclaredForwarded(t *testing.T) {
 	ts := &pluginapi.ThinkingSupport{ZeroAllowed: true, Levels: []string{"none", "low"}}
 	m := decodeReq(t, mustBuild(t, "m", "openai",

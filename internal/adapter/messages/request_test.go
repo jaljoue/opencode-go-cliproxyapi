@@ -532,14 +532,15 @@ func TestChatCompletionsEmptyArgsToolImagesDefaultSchema(t *testing.T) {
 }
 
 func TestChatCompletionsUnknownEffort(t *testing.T) {
-	_, eErr := chatReq(t, `{"messages":[{"role":"user","content":"a"}],"reasoning_effort":"maximum"}`)
-	if eErr == nil || eErr.Class != errclass.ClassUnsupported {
-		t.Fatalf("want ClassUnsupported, got %+v", eErr)
+	// Transparent router: unlisted efforts pass through without local
+	// validation; upstream is the sole authority. Unknown levels resolve
+	// to no thinking block rather than a descriptive rejection.
+	if _, eErr := chatReq(t, `{"messages":[{"role":"user","content":"a"}],"reasoning_effort":"maximum"}`); eErr != nil {
+		t.Fatalf("maximum: want nil (passthrough), got %+v", eErr)
 	}
-	// undeclared canonical levels are rejected explicitly too (FR-005).
-	_, eErr = chatReq(t, `{"messages":[{"role":"user","content":"a"}],"reasoning_effort":"max"}`)
-	if eErr == nil || eErr.Class != errclass.ClassUnsupported {
-		t.Fatalf("undeclared max: want ClassUnsupported, got %+v", eErr)
+	// undeclared canonical levels pass through too (FR-005).
+	if _, eErr := chatReq(t, `{"messages":[{"role":"user","content":"a"}],"reasoning_effort":"max"}`); eErr != nil {
+		t.Fatalf("undeclared max: want nil (passthrough), got %+v", eErr)
 	}
 }
 
@@ -976,5 +977,70 @@ func TestParallelFalseNoneStillUnsupported(t *testing.T) { // row 7
 	if eErr == nil || eErr.Class != errclass.ClassUnsupported ||
 		!strings.Contains(eErr.Message, `"none"`) {
 		t.Fatalf("err = %v", eErr)
+	}
+}
+
+func TestFromResponses_ReasoningEffortPassthroughWithoutValidation(t *testing.T) {
+	body := `{"input":"hi","reasoning":{"effort":"xhigh"}}`
+	out, eErr := BuildRequest("claude-3-7-sonnet", "openai-response", []byte(body), nil)
+	if eErr != nil {
+		if eErr.Class == errclass.ClassUnsupported {
+			t.Fatalf("BuildRequest rejected xhigh with ClassUnsupported: %+v", eErr)
+		}
+		t.Fatalf("BuildRequest err = %+v, want nil (passthrough xhigh)", eErr)
+	}
+	_ = decodeReq(t, out)
+}
+
+func TestFromResponses_CustomToolCallAndOutput(t *testing.T) {
+	body := `{
+		"input": [
+			{"type": "message", "role": "user", "content": "run script"},
+			{"type": "custom_tool_call", "call_id": "call_c1", "name": "exec", "input": "text('ok');"},
+			{"type": "custom_tool_call_output", "call_id": "call_c1", "output": [{"type": "input_text", "text": "ok"}]}
+		]
+	}`
+	out, eErr := BuildRequest("claude-3-5-sonnet", "openai-response", []byte(body), nil)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	m := decodeReq(t, out)
+	msgs := m["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("want 3 messages, got %d: %v", len(msgs), msgs)
+	}
+	asst := msgs[1].(map[string]any)
+	if asst["role"] != "assistant" {
+		t.Fatalf("message 1 role = %v, want assistant", asst["role"])
+	}
+	blocks := asst["content"].([]any)
+	var tu map[string]any
+	for _, raw := range blocks {
+		if b := raw.(map[string]any); b["type"] == "tool_use" {
+			tu = b
+		}
+	}
+	if tu == nil || tu["id"] != "call_c1" || tu["name"] != "exec" || tu["input"].(map[string]any)["input"] != "text('ok');" {
+		t.Fatalf("tool_use block wrong: %v", blocks)
+	}
+	user := msgs[2].(map[string]any)
+	if user["role"] != "user" {
+		t.Fatalf("message 2 role = %v, want user", user["role"])
+	}
+	var tr map[string]any
+	switch c := user["content"].(type) {
+	case []any:
+		for _, raw := range c {
+			if b := raw.(map[string]any); b["type"] == "tool_result" {
+				tr = b
+			}
+		}
+	case map[string]any:
+		if c["type"] == "tool_result" {
+			tr = c
+		}
+	}
+	if tr == nil || tr["tool_use_id"] != "call_c1" || tr["content"] != "ok" {
+		t.Fatalf("tool_result block wrong: %v", user["content"])
 	}
 }

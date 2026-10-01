@@ -770,20 +770,18 @@ func TestFromResponses_NamespaceToolIgnored(t *testing.T) {
 }
 
 func TestResponsesReasoningEffortValidated(t *testing.T) {
-	// ts nil → default levels {low,medium,high}: unsupported value rejected
-	// naming it; a supported level forwards verbatim.
-	_, eErr := BuildRequest("m", "openai-response",
-		[]byte(`{"reasoning":{"effort":"xhigh"},"input":"hi"}`), nil)
-	if eErr == nil || eErr.Class != errclass.ClassUnsupported ||
-		!strings.Contains(eErr.Message, `"xhigh"`) {
-		t.Fatalf("unsupported effort err = %+v", eErr)
+	// Transparent router: unlisted efforts pass through without local
+	// validation; upstream is the sole authority.
+	out := mustBuild(t, "openai-response", `{"reasoning":{"effort":"xhigh"},"input":"hi"}`, nil)
+	if out["reasoning_effort"] != "xhigh" {
+		t.Fatalf("passthrough effort = %v, want xhigh", out["reasoning_effort"])
 	}
-	out := mustBuild(t, "openai-response", `{"reasoning":{"effort":"high"},"input":"hi"}`, nil)
+	out = mustBuild(t, "openai-response", `{"reasoning":{"effort":"high"},"input":"hi"}`, nil)
 	if out["reasoning_effort"] != "high" {
 		t.Fatalf("supported effort = %v", out["reasoning_effort"])
 	}
 
-	// ts declaring xhigh admits it.
+	// Normalization still applies regardless of declared capability.
 	ts := &pluginapi.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}}
 	out = mustBuild(t, "openai-response", `{"reasoning":{"effort":"XHigh"},"input":"hi"}`, ts)
 	if out["reasoning_effort"] != "xhigh" {
@@ -948,5 +946,56 @@ func TestInHistorySystemRoleInMessages(t *testing.T) {
 	sys := msgs[0].(map[string]any)
 	if sys["role"] != "system" || sys["content"] != "sys-inturn" {
 		t.Fatalf("in-history system message wrong: %v", sys)
+	}
+}
+
+func TestFromResponses_CustomToolCallAndOutput(t *testing.T) {
+	body := `{
+		"input": [
+			{"type": "message", "role": "user", "content": "run script"},
+			{"type": "custom_tool_call", "call_id": "call_c1", "name": "exec", "input": "text('ok');"},
+			{"type": "custom_tool_call_output", "call_id": "call_c1", "output": [{"type": "input_text", "text": "ok"}]}
+		]
+	}`
+	out, eErr := BuildRequest("gpt-4o", "openai-response", []byte(body), nil)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	m := decodeOut(t, out, eErr)
+	msgs := m["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("want 3 messages, got %d: %v", len(msgs), msgs)
+	}
+	if msgs[0].(map[string]any)["role"] != "user" || msgs[0].(map[string]any)["content"] != "run script" {
+		t.Fatalf("message 0 wrong: %v", msgs[0])
+	}
+	asst := msgs[1].(map[string]any)
+	if asst["role"] != "assistant" {
+		t.Fatalf("message 1 role = %v, want assistant", asst["role"])
+	}
+	calls := asst["tool_calls"].([]any)
+	c0 := calls[0].(map[string]any)
+	if c0["id"] != "call_c1" {
+		t.Fatalf("tool call id = %v, want call_c1", c0["id"])
+	}
+	fn := c0["function"].(map[string]any)
+	if fn["name"] != "exec" || fn["arguments"] != `{"input":"text('ok');"}` {
+		t.Fatalf("tool call function wrong: %v", fn)
+	}
+	tool := msgs[2].(map[string]any)
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call_c1" || tool["content"] != "ok" {
+		t.Fatalf("tool message wrong: %v", tool)
+	}
+}
+
+func TestResponsesReasoningEffortPassthroughWithoutValidation(t *testing.T) {
+	body := `{"reasoning":{"effort":"xhigh"},"input":"hi"}`
+	out, eErr := BuildRequest("gpt-4o", "openai-response", []byte(body), nil)
+	if eErr != nil {
+		t.Fatalf("BuildRequest err = %+v, want nil (passthrough xhigh)", eErr)
+	}
+	m := decodeOut(t, out, nil)
+	if m["reasoning_effort"] != "xhigh" {
+		t.Fatalf("reasoning_effort = %v, want xhigh", m["reasoning_effort"])
 	}
 }

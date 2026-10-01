@@ -165,14 +165,9 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 		req.MaxOutputTokens = src.MaxCompletionTokens
 	}
 	if src.ReasoningEffort != "" {
-		if eErr := thinking.ValidateEffort(src.ReasoningEffort, ts); eErr != nil {
-			return nil, eErr
-		}
-		// The dynamic "auto" sentinel omits reasoning via the shared policy
-		// below; a declared "none" and every other validated value forward
-		// as-is (matching the CC-upstream leg).
-		if effort, ok := reasoningEffortFor(strings.ToLower(strings.TrimSpace(src.ReasoningEffort)), ts); ok {
-			req.Reasoning = map[string]any{"effort": effort}
+		norm := strings.ToLower(strings.TrimSpace(src.ReasoningEffort))
+		if norm != "auto" { // "auto" sentinel omits reasoning block (FR-005)
+			req.Reasoning = map[string]any{"effort": norm}
 		}
 	}
 

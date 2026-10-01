@@ -354,9 +354,6 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 		out.MaxTokens = src.MaxOutputTokens
 	}
 	if src.Reasoning != nil && src.Reasoning.Effort != "" {
-		if eErr := thinking.ValidateEffort(src.Reasoning.Effort, ts); eErr != nil {
-			return nil, eErr
-		}
 		out.ReasoningEffort = strings.ToLower(strings.TrimSpace(src.Reasoning.Effort))
 	}
 	kind, tcName, eErr := shared.DecodeToolChoice(src.ToolChoice)

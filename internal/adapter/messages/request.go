@@ -160,9 +160,6 @@ func finalize(req *messagesRequest, system []string, effort string, ts *pluginap
 		req.Messages = []anthropicMessage{}
 	}
 	if effort != "" {
-		if eErr := thinking.ValidateEffort(effort, ts); eErr != nil {
-			return nil, eErr
-		}
 		budget, _ := thinking.BudgetFromEffort(effort, ts)
 		applyThinking(req, budget)
 	}
