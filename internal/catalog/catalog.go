@@ -123,6 +123,7 @@ var prefixRoutes = []struct {
 	{"muse-spark", RouteResponses},
 	{"deepseek", RouteChatCompletions},
 	{"minimax", RouteMessages},
+	{"claude", RouteMessages},
 	{"longcat", RouteChatCompletions},
 	{"grok", RouteResponses},
 	{"gpt", RouteResponses},
