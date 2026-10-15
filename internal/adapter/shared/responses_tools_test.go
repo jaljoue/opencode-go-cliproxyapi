@@ -33,7 +33,7 @@ func TestResponsesAdditionalToolsMerge(t *testing.T) {
 	if r.Tools[0].Description != "original" || !strings.Contains(string(r.Tools[0].Parameters), `"required":["q"]`) {
 		t.Fatalf("first declaration lost metadata: %+v", r.Tools[0])
 	}
-	if len(items) != 3 || items[0].Type != "message" || items[1].CallID != "c1" || items[2].Output != "found" {
+	if len(items) != 3 || items[0].Type != "message" || items[1].CallID != "c1" || string(items[2].Output) != `"found"` {
 		t.Fatalf("conversation changed: %+v", items)
 	}
 }
