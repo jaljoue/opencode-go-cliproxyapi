@@ -23,6 +23,7 @@ Full OpenAI Codex CLI support across all models: multi-agent namespaces, custom 
 
 ## Upgrade Notes
 
+- The plugin is now built against the CLIProxyAPI v8 SDK (v8.0.29, plugin ABI schema 6) and requires CLIProxyAPI v8. v7 hosts reject it.
 - Replace the old plugin binary with the new release binary.
 - Restart CLIProxyAPI after replacing the plugin.
 - Hard-refresh Management Center if the plugin page looks stale.

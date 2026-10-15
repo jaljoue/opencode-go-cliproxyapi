@@ -79,7 +79,7 @@ routes. Non-text system blocks such as tool additions and removals are rejected.
 
 ## Requirements
 
-- **CLIProxyAPI**: `v7.2.138+`
+- **CLIProxyAPI**: `v8.0.0+` (plugin ABI schema 6; v7 hosts reject the plugin)
 - **Go Toolchain**: Go 1.24+ (with CGO enabled for C-shared build mode)
 
 ## Build

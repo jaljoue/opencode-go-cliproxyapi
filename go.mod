@@ -3,7 +3,7 @@ module opencode-go-cliproxyapi
 go 1.26.7
 
 require (
-	github.com/router-for-me/CLIProxyAPI/v7 v7.2.138
+	github.com/router-for-me/CLIProxyAPI/v8 v8.0.29
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	gopkg.in/yaml.v3 v3.0.1
