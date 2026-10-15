@@ -678,7 +678,8 @@ func (e ResponsesEventEmitter) Created() []byte {
 
 // ItemAdded announces one output item before its first delta; item carries
 // the block-type-specific fields (message id/role/content, or function_call
-// call_id/name/arguments per the canonical call_id-only shape).
+// call_id/name/arguments per the canonical call_id-only shape). Calls to
+// tools declared as custom are announced as custom_tool_call items.
 func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) []byte {
 	if item["type"] == "function_call" {
 		name, _ := item["name"].(string)
@@ -686,6 +687,11 @@ func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) [
 		item["name"] = identity.name
 		if identity.namespace != "" {
 			item["namespace"] = identity.namespace
+		}
+		if identity.custom {
+			item["type"] = "custom_tool_call"
+			item["input"] = ""
+			delete(item, "arguments")
 		}
 	}
 	return SSEEvent("response.output_item.added", map[string]any{
@@ -707,6 +713,42 @@ func (e ResponsesEventEmitter) ArgsDelta(itemID string, outputIndex int, delta s
 	return SSEEvent("response.function_call_arguments.delta", map[string]any{
 		"type": "response.function_call_arguments.delta", "item_id": itemID, "output_index": outputIndex, "delta": delta,
 	})
+}
+
+// ToolDelta streams one tool-call fragment for the announced item. Function
+// calls forward the fragment verbatim. Custom tool calls stream their
+// unwrapped input instead: nothing is emitted until the accumulated
+// {"input":...} arguments decode, then only the bytes past *emitted, so
+// wrapper JSON never reaches the client. Returns nil when nothing is due.
+func (e ResponsesEventEmitter) ToolDelta(itemID string, outputIndex int, name, fragment, accumulated string, emitted *int) []byte {
+	if !e.Tools.identity(name).custom {
+		return e.ArgsDelta(itemID, outputIndex, fragment)
+	}
+	input := UnwrapCustomToolInput(accumulated)
+	if input == accumulated || *emitted >= len(input) {
+		return nil
+	}
+	delta := input[*emitted:]
+	*emitted = len(input)
+	return SSEEvent("response.custom_tool_call_input.delta", map[string]any{
+		"type": "response.custom_tool_call_input.delta", "item_id": itemID, "output_index": outputIndex, "delta": delta,
+	})
+}
+
+// ToolDone renders the arguments or custom input completion for one
+// rendered tool-call item, followed by its output_item.done.
+func (e ResponsesEventEmitter) ToolDone(outputIndex int, item RespItem) [][]byte {
+	if item.Type == "custom_tool_call" {
+		input := ""
+		if item.Input != nil {
+			input = *item.Input
+		}
+		done := SSEEvent("response.custom_tool_call_input.done", map[string]any{
+			"type": "response.custom_tool_call_input.done", "item_id": item.CallID, "output_index": outputIndex, "input": input,
+		})
+		return [][]byte{done, e.ItemDone(outputIndex, item)}
+	}
+	return [][]byte{e.ArgsDone(item.CallID, outputIndex, item.Name, item.Arguments), e.ItemDone(outputIndex, item)}
 }
 
 // TextDone renders the output_text completion for the announced message
@@ -1073,6 +1115,7 @@ type RespItem struct {
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments string          `json:"arguments,omitempty"`
+	Input     *string         `json:"input,omitempty"` // custom_tool_call freeform input
 	Output    json.RawMessage `json:"output,omitempty"`
 	Summary   []struct {
 		Text string `json:"text"`
@@ -1581,9 +1624,17 @@ func (a *OutputAssembler) AddText(fragment string) {
 
 // AppendFunctionCall adds one function_call item in arrival order;
 // arguments pass through verbatim — callers apply the absent-arguments
-// policy themselves.
+// policy themselves. Calls to custom tools become custom_tool_call items
+// carrying the unwrapped input.
 func (a *OutputAssembler) AppendFunctionCall(callID, name, args string) {
 	identity := a.tools.identity(name)
+	if identity.custom {
+		input := UnwrapCustomToolInput(args)
+		a.items = append(a.items, RespItem{
+			Type: "custom_tool_call", CallID: callID, Name: identity.name, Namespace: identity.namespace, Input: &input,
+		})
+		return
+	}
 	a.items = append(a.items, RespItem{
 		Type: "function_call", CallID: callID, Name: identity.name, Namespace: identity.namespace, Arguments: args,
 	})

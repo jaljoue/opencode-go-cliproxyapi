@@ -950,4 +950,3 @@ func TestInHistorySystemRoleInMessages(t *testing.T) {
 		t.Fatalf("in-history system message wrong: %v", sys)
 	}
 }
-

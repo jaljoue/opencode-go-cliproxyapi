@@ -479,3 +479,28 @@ func TestConvertMessagesCacheUsageDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertMessagesToResponsesCustomToolRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"custom","name":"apply_patch"}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	upstream := `{"id":"m_1","type":"message","role":"assistant","model":"m",` +
+		`"content":[{"type":"tool_use","id":"tu_1","name":"apply_patch","input":{"input":"*** Begin Patch"}}],` +
+		`"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`
+	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(upstream), rt)
+	if eErr != nil {
+		t.Fatalf("convert: %v", eErr)
+	}
+	var resp struct {
+		Output []map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, out)
+	}
+	if len(resp.Output) != 1 || resp.Output[0]["type"] != "custom_tool_call" || resp.Output[0]["call_id"] != "tu_1" ||
+		resp.Output[0]["name"] != "apply_patch" || resp.Output[0]["input"] != "*** Begin Patch" || resp.Output[0]["arguments"] != nil {
+		t.Fatalf("custom call not restored: %s", out)
+	}
+}

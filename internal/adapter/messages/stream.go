@@ -48,6 +48,8 @@ type blockState struct {
 	emitted bool            // openai: id/name attached to the first arguments fragment
 	text    strings.Builder // accumulated text_delta content (responses target)
 	args    strings.Builder // accumulated input_json_delta content (responses target)
+	// inputEmitted counts custom tool input bytes already streamed (responses target).
+	inputEmitted int
 }
 
 // NewStreamConverter prepares stream conversion for sourceFormat
@@ -304,7 +306,9 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 				return false, errclass.Translation("tool arguments fragment without a tool_use block start")
 			}
 			bs.args.WriteString(ev.Delta.PartialJSON)
-			*events = append(*events, sc.responsesEm().ArgsDelta(bs.id, bs.outIdx, ev.Delta.PartialJSON))
+			if delta := sc.responsesEm().ToolDelta(bs.id, bs.outIdx, bs.name, ev.Delta.PartialJSON, bs.args.String(), &bs.inputEmitted); delta != nil {
+				*events = append(*events, delta)
+			}
 		case "thinking_delta":
 			// FR-005 explicit omission policy: no standard Responses
 			// reasoning-delta event; dropped.
@@ -351,8 +355,8 @@ func (sc *StreamConverter) responsesCompleted() [][]byte {
 		case "message":
 			text := responsesMessageText(v.Content)
 			out = append(out, em.TextDone(v.ID, idx, text), em.ContentPartDone(v.ID, idx, text), em.ItemDone(idx, v))
-		case "function_call":
-			out = append(out, em.ArgsDone(v.CallID, idx, v.Name, v.Arguments), em.ItemDone(idx, v))
+		case "function_call", "custom_tool_call":
+			out = append(out, em.ToolDone(idx, v)...)
 		}
 	}
 	return append(out, em.Completed(status, usage, items))

@@ -1190,3 +1190,52 @@ func TestStreamResponsesNamespaceRestored(t *testing.T) {
 		t.Fatalf("terminal identity not restored: %v", fc)
 	}
 }
+
+func TestStreamResponsesCustomToolRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"custom","name":"exec"}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	sc := NewStreamConverter("openai-response", rt)
+	evs := feedAll(t, sc,
+		`data: {"id":"r1","model":"m","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"exec","arguments":"{\"input\":\"ls"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" -la\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`)
+	var deltas []string
+	var added, inputDone, itemDone, completed map[string]any
+	for _, e := range evs {
+		switch e.Name {
+		case "response.output_item.added":
+			added = e.Data
+		case "response.custom_tool_call_input.delta":
+			deltas = append(deltas, e.Data["delta"].(string))
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			t.Fatalf("custom tool emitted function event %s", e.Name)
+		case "response.custom_tool_call_input.done":
+			inputDone = e.Data
+		case "response.output_item.done":
+			itemDone = e.Data
+		case "response.completed":
+			completed = e.Data
+		}
+	}
+	if added == nil || inputDone == nil || itemDone == nil || completed == nil {
+		t.Fatalf("missing lifecycle events: %v", evs)
+	}
+	if item := added["item"].(map[string]any); item["type"] != "custom_tool_call" || item["name"] != "exec" || item["input"] != "" {
+		t.Fatalf("ItemAdded = %v", item)
+	}
+	if strings.Join(deltas, "") != "ls -la" || inputDone["input"] != "ls -la" || inputDone["item_id"] != "c1" {
+		t.Fatalf("input deltas = %q, done = %v", deltas, inputDone)
+	}
+	if item := itemDone["item"].(map[string]any); item["type"] != "custom_tool_call" || item["input"] != "ls -la" || item["call_id"] != "c1" {
+		t.Fatalf("ItemDone = %v", item)
+	}
+	output := completed["response"].(map[string]any)["output"].([]any)
+	if len(output) != 1 || output[0].(map[string]any)["type"] != "custom_tool_call" || output[0].(map[string]any)["input"] != "ls -la" {
+		t.Fatalf("terminal output = %v", output)
+	}
+}

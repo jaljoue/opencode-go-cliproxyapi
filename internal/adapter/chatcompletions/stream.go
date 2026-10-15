@@ -54,6 +54,8 @@ type streamTool struct {
 	name       string
 	args       strings.Builder
 	stopped    bool // content_block_stop emitted
+	// inputEmitted counts custom tool input bytes already streamed (responses target).
+	inputEmitted int
 }
 
 // NewStreamConverter returns a converter translating Chat Completions
@@ -476,7 +478,9 @@ func (sc *StreamConverter) responsesLine(line string) ([][]byte, *errclass.Error
 		}
 		if tc.Function.Arguments != "" {
 			t.args.WriteString(tc.Function.Arguments)
-			events = append(events, sc.responsesEm().ArgsDelta(t.id, t.blockIndex, tc.Function.Arguments))
+			if ev := sc.responsesEm().ToolDelta(t.id, t.blockIndex, t.name, tc.Function.Arguments, t.args.String(), &t.inputEmitted); ev != nil {
+				events = append(events, ev)
+			}
 		}
 	}
 	if choice.FinishReason != "" && !sc.finished {
@@ -556,9 +560,8 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 			events = append(events, em.TextDone(v.ID, idx, text))
 			events = append(events, em.ContentPartDone(v.ID, idx, text))
 			events = append(events, em.ItemDone(idx, v))
-		case "function_call":
-			events = append(events, em.ArgsDone(v.CallID, idx, v.Name, v.Arguments))
-			events = append(events, em.ItemDone(idx, v))
+		case "function_call", "custom_tool_call":
+			events = append(events, em.ToolDone(idx, v)...)
 		}
 	}
 	return append(events, em.Completed(status, usage, items))

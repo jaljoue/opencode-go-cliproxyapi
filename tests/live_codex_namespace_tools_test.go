@@ -228,3 +228,51 @@ func TestLiveCodexNamespaceTools_StreamRoundTrip(t *testing.T) {
 		t.Fatalf("missing response.output_item.done for spawn_agent/subagents")
 	}
 }
+
+// TestLiveCodexCustomToolAccepted asserts that client custom tools (e.g. Codex exec)
+// and apply_patch are accepted rather than rejected with HTTP 400.
+func TestLiveCodexCustomToolAccepted(t *testing.T) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	payload := map[string]any{
+		"model": modelID("space-bunny"),
+		"input": "say ok",
+		"tools": []map[string]any{
+			{
+				"type":        "custom",
+				"name":        "exec",
+				"description": "Run JavaScript code to orchestrate tools",
+			},
+			{
+				"type": "custom",
+				"name": "apply_patch",
+			},
+			{
+				"type": "web_search",
+			},
+		},
+		"max_output_tokens": 16,
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, cpaHost+"/v1/responses", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cpaKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+

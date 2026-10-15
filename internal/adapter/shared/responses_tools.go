@@ -12,14 +12,18 @@ import (
 type responseToolIdentity struct {
 	name      string
 	namespace string
+	// custom marks tools declared as type "custom" (freeform input), which
+	// travel upstream as functions taking one "input" string.
+	custom bool
 }
 
 // ResponseTools retains request-local tool identities while translating a
 // Responses conversation through a protocol with a flat function namespace.
 // The same instance must accompany request and response conversion.
 type ResponseTools struct {
-	// StripHostedWebSearch omits optional hosted search declarations when the
-	// upstream protocol cannot execute them. Client function tools are retained.
+	// StripHostedWebSearch omits optional hosted tool declarations (web search,
+	// tool search, image generation) when the upstream protocol cannot execute
+	// them. Client function tools are retained.
 	StripHostedWebSearch bool
 	names                map[string]responseToolIdentity
 }
@@ -32,8 +36,9 @@ func NewResponseTools() *ResponseTools {
 // Normalize merges top-level tools and additional_tools declarations, removes
 // declaration items from the conversation, and qualifies tool calls and choices.
 // First declaration wins for repeated identities, including across both sources.
-// Optional hosted search is omitted only when StripHostedWebSearch is enabled;
-// all other unsupported tools fail explicitly.
+// Custom tools become functions taking one "input" string, and their history
+// items become function calls. Optional hosted tools are omitted only when
+// StripHostedWebSearch is enabled; all other unsupported tools fail explicitly.
 func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespItem, *errclass.Error) {
 	items, eErr := r.DecodeInputItems()
 	if eErr != nil {
@@ -44,9 +49,14 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	strippedSearch := false
 	var add func(RespTool, string) *errclass.Error
 	add = func(tool RespTool, namespace string) *errclass.Error {
-		if t.StripHostedWebSearch && namespace == "" && isHostedWebSearch(tool.Type) {
+		if t.StripHostedWebSearch && namespace == "" && isOptionalHostedTool(tool.Type) {
 			strippedSearch = true
 			return nil
+		}
+		custom := tool.Type == "custom"
+		if custom {
+			tool.Type = "function"
+			tool.Parameters = customToolParameters
 		}
 		if tool.Type == "namespace" && namespace == "" {
 			if strings.TrimSpace(tool.Name) == "" || tool.Tools == nil {
@@ -65,7 +75,7 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 		if strings.TrimSpace(tool.Name) == "" {
 			return errclass.Translation("function tool requires a name")
 		}
-		identity := responseToolIdentity{name: tool.Name, namespace: namespace}
+		identity := responseToolIdentity{name: tool.Name, namespace: namespace, custom: custom}
 		name := qualifiedResponseToolName(tool.Name, namespace)
 		if prev, ok := t.names[name]; ok {
 			if prev != identity {
@@ -104,9 +114,20 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
 				Message: "hosted web_search history cannot be translated; start a new conversation or use a compatible Responses model"}
 		}
-		if item.Type == "function_call" {
+		switch item.Type {
+		case "custom_tool_call":
+			input := ""
+			if item.Input != nil {
+				input = *item.Input
+			}
+			args, _ := json.Marshal(map[string]string{"input": input})
+			item.Type, item.Arguments, item.Input = "function_call", string(args), nil
+			fallthrough
+		case "function_call":
 			item.Name = qualifiedResponseToolName(item.Name, item.Namespace)
 			item.Namespace = ""
+		case "custom_tool_call_output":
+			item.Type = "function_call_output"
 		}
 	}
 	// Leave string choices and unrelated choice validation to DecodeToolChoice.
@@ -114,9 +135,9 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	if json.Unmarshal(r.ToolChoice, &choice) == nil && choice != nil {
 		var kind, name, namespace string
 		_ = json.Unmarshal(choice["type"], &kind)
-		if t.StripHostedWebSearch && isHostedWebSearch(kind) {
+		if t.StripHostedWebSearch && isOptionalHostedTool(kind) {
 			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
-				Message: "tool_choice requires hosted web_search, which this upstream route cannot execute"}
+				Message: "tool_choice requires hosted " + kind + ", which this upstream route cannot execute"}
 		}
 		if kind == "function" {
 			if raw, ok := choice["namespace"]; ok {
@@ -136,12 +157,12 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 		}
 		if (kind == ToolChoiceAny || kind == ToolChoiceNamed) && len(tools) == 0 {
 			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
-				Message: "tool_choice requires a tool, but none remain after removing hosted web_search"}
+				Message: "tool_choice requires a tool, but none remain after removing hosted tools"}
 		}
 		if kind == ToolChoiceNamed {
 			if _, exists := t.names[name]; !exists {
 				return nil, &errclass.Error{Class: errclass.ClassUnsupported,
-					Message: "tool_choice names a tool that is unavailable after removing hosted web_search"}
+					Message: "tool_choice names a tool that is unavailable after removing hosted tools"}
 			}
 		}
 		// Avoid forwarding a tool choice without any tool declarations. Requests
@@ -155,8 +176,29 @@ func (t *ResponseTools) Normalize(r *ResponsesRequest, target string) ([]RespIte
 	return conversation, nil
 }
 
-func isHostedWebSearch(toolType string) bool {
-	return toolType == "web_search" || toolType == "web_search_preview"
+func isOptionalHostedTool(toolType string) bool {
+	switch toolType {
+	case "web_search", "web_search_preview", "tool_search", "image_generation":
+		return true
+	}
+	return false
+}
+
+// customToolParameters is the function schema a freeform custom tool is
+// declared with on translated routes; UnwrapCustomToolInput reverses it.
+var customToolParameters = json.RawMessage(`{"type":"object","properties":{"input":{"type":"string","description":"Raw freeform input for this tool."}},"required":["input"]}`)
+
+// UnwrapCustomToolInput extracts the freeform input from custom tool call
+// arguments shaped by customToolParameters. Arguments without a string
+// "input" property pass through verbatim.
+func UnwrapCustomToolInput(args string) string {
+	var wrapped struct {
+		Input *string `json:"input"`
+	}
+	if json.Unmarshal([]byte(args), &wrapped) == nil && wrapped.Input != nil {
+		return *wrapped.Input
+	}
+	return args
 }
 
 func qualifiedResponseToolName(name, namespace string) string {
