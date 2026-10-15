@@ -186,6 +186,11 @@ func pluginConfigFields() []pluginapi.ConfigField {
 			Description: "Optional catalog discovery URL (default: {base-url}/models).",
 		},
 		{
+			Name:        "console-url",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "OpenCode Console root used by quota refreshes for the Go plan and account email (default: https://opencode.ai/console).",
+		},
+		{
 			Name:        "model-prefix",
 			Type:        pluginapi.ConfigFieldTypeObject,
 			Description: "Client-facing model ID prefix configuration (`enabled: bool`, `value: string`).",
@@ -204,6 +209,11 @@ func pluginConfigFields() []pluginapi.ConfigField {
 			Name:        "route-overrides",
 			Type:        pluginapi.ConfigFieldTypeObject,
 			Description: "Explicit route overrides per model (`<model-id>: {protocol: string, endpoint: string}`).",
+		},
+		{
+			Name:        "strip-hosted-web-search",
+			Type:        pluginapi.ConfigFieldTypeBoolean,
+			Description: "Omit optional hosted web_search declarations on translated Responses requests (default: true).",
 		},
 		{
 			Name:        "request-timeout",
