@@ -178,7 +178,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "base-url",
 			Type:        pluginapi.ConfigFieldTypeString,
-			Description: "Upstream base URL (default: https://opencode.ai/zen/go/v1).",
+			Description: "Upstream base URL (default: https://opencode.ai/inference/go/v1).",
 		},
 		{
 			Name:        "catalog-url",
@@ -203,7 +203,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "protocols",
 			Type:        pluginapi.ConfigFieldTypeObject,
-			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`).",
+			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`, `gemini: bool`).",
 		},
 		{
 			Name:        "route-overrides",

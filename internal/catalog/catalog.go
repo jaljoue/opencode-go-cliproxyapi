@@ -36,6 +36,9 @@ const (
 	RouteChatCompletions Route = "chat-completions"
 	RouteMessages        Route = "messages"
 	RouteResponses       Route = "responses"
+	// RouteGemini is the native Gemini API; its endpoint is per model
+	// ({base}/models/{id}) and the executor appends the action.
+	RouteGemini Route = "gemini"
 )
 
 // EndpointPath returns the upstream endpoint path for the route (FR-004).
@@ -44,6 +47,7 @@ var routeEndpoints = map[Route]string{
 	RouteChatCompletions: "/v1/chat/completions",
 	RouteMessages:        "/v1/messages",
 	RouteResponses:       "/v1/responses",
+	RouteGemini:          "/v1/models",
 }
 
 // EndpointPath returns the route's upstream endpoint path, or "" for
@@ -120,16 +124,20 @@ var prefixRoutes = []struct {
 	prefix string
 	route  Route
 }{
+	{"space-bunny", RouteChatCompletions},
 	{"muse-spark", RouteResponses},
 	{"deepseek", RouteChatCompletions},
 	{"minimax", RouteMessages},
-	{"claude", RouteMessages},
+	{"cat-jam", RouteChatCompletions},
 	{"longcat", RouteChatCompletions},
+	{"claude", RouteMessages},
+	{"gemini", RouteGemini},
 	{"grok", RouteResponses},
 	{"gpt", RouteResponses},
 	{"kimi", RouteChatCompletions},
 	{"qwen", RouteMessages},
 	{"glm", RouteChatCompletions},
+	{"step", RouteChatCompletions},
 	{"mimo", RouteChatCompletions},
 	{"hy", RouteChatCompletions},
 }
@@ -297,6 +305,9 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 		}
 		if endpoint == "" {
 			endpoint = route.EndpointPath()
+			if route == RouteGemini {
+				endpoint += "/" + url.PathEscape(e.ID)
+			}
 		}
 		inputModes := firstNonEmpty(e.InputModes, e.InputModalities)
 		outputModes := firstNonEmpty(e.OutputModes, e.OutputModalities)
@@ -355,6 +366,8 @@ func (m *Manager) protocolEnabled(r Route) bool {
 		return m.cfg.Protocols.Messages
 	case RouteResponses:
 		return m.cfg.Protocols.Responses
+	case RouteGemini:
+		return m.cfg.Protocols.Gemini
 	}
 	return true
 }
@@ -380,7 +393,7 @@ func (m *Manager) resolve(e rawModel) (Route, string, bool, string) {
 
 // JoinUpstreamURL joins the configured base-url onto an endpoint path and
 // is the single source of truth for that join (spec 05 §2): base-url
-// already carries the version segment (default .../zen/go/v1, catalog at
+// already carries the version segment (default .../inference/go/v1, catalog at
 // {base}/models), so a leading "/v1" on the endpoint is dropped instead of
 // doubled. The authority-escape check (endpointEscapesBase) must parse
 // exactly the URL this produces — two independent join formulas would be

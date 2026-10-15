@@ -28,10 +28,10 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if !c.StripHostedWebSearch {
 		t.Error("hosted web search filtering must default to enabled")
 	}
-	if c.BaseURL != "https://opencode.ai/zen/go/v1" {
+	if c.BaseURL != "https://opencode.ai/inference/go/v1" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
-	if c.CatalogURL != "https://opencode.ai/zen/go/v1/models" {
+	if c.CatalogURL != "https://opencode.ai/inference/go/v1/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
 	}
 	if c.ConsoleURL != "https://opencode.ai/console" {

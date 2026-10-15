@@ -87,7 +87,7 @@ func TestClientCompatibilityExecution(t *testing.T) {
 					assertCleanStreamClose(t, f)
 				}
 				wire := lastWire(t, f, httpMethod)
-				if wire["url"] != "https://opencode.ai/zen/go"+path {
+				if wire["url"] != "https://opencode.ai/inference/go"+path {
 					t.Fatalf("route = %v", wire["url"])
 				}
 				upstreamBody := wireBody(t, wire, "body")

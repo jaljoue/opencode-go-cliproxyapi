@@ -397,7 +397,7 @@ func TestExecuteChatRoute(t *testing.T) {
 	if wire["method"] != http.MethodPost {
 		t.Fatalf("bridged method = %v", wire["method"])
 	}
-	if wire["url"] != "https://opencode.ai/zen/go/v1/chat/completions" {
+	if wire["url"] != "https://opencode.ai/inference/go/v1/chat/completions" {
 		t.Fatalf("bridged url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -1374,7 +1374,7 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 		eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("unknown route = %v", eErr)
 	}
-	if _, eErr := buildUpstreamRequest(catalog.Route("weird"), "m", "openai", nil, nil); eErr == nil ||
+	if _, eErr := buildUpstreamRequest(catalog.Route("weird"), "m", "openai", nil, nil, false); eErr == nil ||
 		eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("unknown route build = %v", eErr)
 	}

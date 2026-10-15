@@ -6,7 +6,7 @@ The plugin unifies model discovery, protocol translation, and execution across O
 
 ## The Problem
 
-OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, and OpenAI Responses `/v1/responses`).
+OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, OpenAI Responses `/v1/responses`, and the native Gemini API `/v1/models/{model}:generateContent`).
 
 Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separate provider blocks for each protocol family. This leads to:
 - **Duplicated configuration & keys**: The same API keys must be configured across multiple provider blocks.
@@ -28,6 +28,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Chat Completions (`/v1/chat/completions`)
   - Anthropic Messages (`/v1/messages`)
   - OpenAI Responses (`/v1/responses`)
+  - Gemini (`/v1/models/{model}:generateContent`), used for Gemini models such as `gemini-4-argon-contributor`
 - **Thinking & Reasoning Support**: Maps reasoning effort across supported client and upstream formats.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
@@ -41,14 +42,35 @@ definitions keep the first declaration, with top-level tools taking precedence.
 Namespaced functions retain their original name and namespace in returned tool
 calls, including streaming responses.
 
+Custom tools (`type: "custom"`, such as Codex `exec` and `apply_patch`) are
+declared upstream as functions that take one `input` string. Returned calls
+are restored as `custom_tool_call` items, with
+`response.custom_tool_call_input.*` stream events, and `custom_tool_call`
+history is replayed as ordinary function calls.
+
+GPT models on the Responses route receive requests verbatim. Other Responses
+models (Grok, Muse Spark) get the same tool normalization. Historical
+`reasoning` and `compaction` items are also dropped for them, because their
+encrypted content is tied to another account.
+
 When translating Responses requests to Chat Completions or Messages, the plugin
-removes optional hosted `web_search` and `web_search_preview` declarations by
-default. Those requests proceed without hosted search. Function tools, including
-client-executed search tools, are preserved. Set `strip-hosted-web-search: false`
-to reject unsupported search declarations instead. Native Responses routes keep
+removes optional hosted `web_search`, `web_search_preview`, `tool_search`, and
+`image_generation` declarations by default. Those requests proceed without the
+hosted tools. Function tools, including client-executed search tools, are
+preserved. Set `strip-hosted-web-search: false` to reject unsupported hosted
+tool declarations instead. Native Responses routes keep
 their tool declarations. Forced hosted-search choices, required tool use with no
 remaining tools, and hosted search history return HTTP 400 rather than silently
 losing the requested behavior. Other unsupported tool types still return an error.
+
+Gemini models are only served through OpenCode Go's native Gemini API, under
+`https://opencode.ai/inference/go/v1`. The plugin translates them with
+CLIProxyAPI's built-in Gemini translators, the same code CLIProxyAPI uses for
+Google's API, so tool calls and thought signatures round-trip for Chat
+Completions, Messages, and Responses clients (including Codex custom tools).
+Reasoning effort maps to Gemini's `low`/`medium`/`high` levels. Gemini 4 Argon
+Contributor trains on request data, so it only works when the workspace's
+Privacy settings allow paid endpoints that train on request data.
 
 Claude Code's text-only inline system messages are translated in conversation
 order on Chat Completions and Responses routes. Initial system instructions and
@@ -89,11 +111,11 @@ Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.op
 plugins:
   configs:
     opencode-go-cliproxyapi:
-      # Upstream base URL (default: "https://opencode.ai/zen/go/v1")
-      base-url: "https://opencode.ai/zen/go/v1"
+      # Upstream base URL (default: "https://opencode.ai/inference/go/v1")
+      base-url: "https://opencode.ai/inference/go/v1"
 
       # Optional catalog endpoint override (default: "{base-url}/models")
-      # catalog-url: "https://opencode.ai/zen/go/v1/models"
+      # catalog-url: "https://opencode.ai/inference/go/v1/models"
 
       # OpenCode Console root for the quota page's plan and account email (default: "https://opencode.ai/console")
       # console-url: "https://opencode.ai/console"
@@ -119,11 +141,12 @@ plugins:
         chat-completions: true   # enables models routed to /v1/chat/completions
         messages: true           # enables models routed to /v1/messages
         responses: true          # enables models routed to /v1/responses
+        gemini: true             # enables models routed to /v1/models/{model}:generateContent
 
       # Explicit route overrides per model (takes priority over built-in prefix routing)
       route-overrides:
         "custom-model":
-          protocol: "messages"           # "chat-completions" | "messages" | "responses"
+          protocol: "messages"           # "chat-completions" | "messages" | "responses" | "gemini"
           endpoint: "/v1/messages"       # must start with /
 
       # Execution settings
@@ -138,7 +161,7 @@ plugins:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
-| `base-url` | `string` | `https://opencode.ai/zen/go/v1` | Upstream base URL. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
+| `base-url` | `string` | `https://opencode.ai/inference/go/v1` | Upstream base URL. Gemini models are only served under `/inference/go/v1`; the older `/zen/go/v1` still serves the other protocols. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
 | `catalog-url` | `string` | `{base-url}/models` | Full URL for catalog discovery. Defaults to `{base-url}/models`. |
 | `console-url` | `string` | `https://opencode.ai/console` | OpenCode Console root used by quota refreshes for the Go plan and account email. Independent of `base-url`. Same URL rules as `base-url`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
@@ -148,8 +171,9 @@ plugins:
 | `protocols.chat-completions` | `bool` | `true` | Protocol switch for Chat Completions endpoints. |
 | `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
 | `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
-| `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
-| `strip-hosted-web-search` | `bool` | `true` | Remove optional Responses `web_search` / `web_search_preview` declarations on Chat Completions and Messages routes. Hosted search is unavailable for those requests. Native Responses routes and client function tools are preserved. Set `false` for strict rejection. |
+| `protocols.gemini` | `bool` | `true` | Protocol switch for native Gemini endpoints. |
+| `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`, `gemini`. A `gemini` override endpoint is the model path, e.g. `/v1/models/<model>`. |
+| `strip-hosted-web-search` | `bool` | `true` | Remove optional Responses `web_search` / `web_search_preview` / `tool_search` / `image_generation` declarations on Chat Completions and Messages routes. Those hosted tools are unavailable for these requests. Native Responses routes and client function tools are preserved. Set `false` for strict rejection. |
 | `request-timeout` | `duration` | `5m` | Upstream HTTP request timeout. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` / `console-url` for local testing. |
