@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/catalog"
@@ -397,7 +397,7 @@ func TestExecuteChatRoute(t *testing.T) {
 	if wire["method"] != http.MethodPost {
 		t.Fatalf("bridged method = %v", wire["method"])
 	}
-	if wire["url"] != "https://opencode.ai/zen/go/v1/chat/completions" {
+	if wire["url"] != "https://opencode.ai/inference/go/v1/chat/completions" {
 		t.Fatalf("bridged url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -779,6 +779,78 @@ func TestExecuteStream4xxClosesUpstreamEntry(t *testing.T) {
 	}
 	if got := len(f.callsOf(pluginabi.MethodHostStreamClose)); got != 0 {
 		t.Fatalf("downstream must stay host-owned pre-first-byte, closes = %d", got)
+	}
+}
+
+func TestExecuteStream4xxExtractsUpstreamMessage(t *testing.T) {
+	errMsg := `{"error":{"message":"Invalid temperature: 999.0. Value must be between 0.0 and 2.0","type":"invalid_request_error"}}`
+	m, f := newStreamManager(t, streamScript{
+		startStatus: http.StatusBadRequest,
+		upstreamID:  "up-400",
+		frames:      []string{errMsg},
+	})
+	resp, err := m.HandleCall("executor.execute_stream",
+		execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), "down-9"))
+	if err != nil {
+		t.Fatalf("execute_stream: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if env.OK || env.Error == nil {
+		t.Fatalf("want error envelope, got: %+v", env)
+	}
+	if !strings.Contains(env.Error.Message, "Invalid temperature: 999.0") {
+		t.Fatalf("error message = %q, want upstream explanation", env.Error.Message)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamRead)); got != 1 {
+		t.Fatalf("stream reads = %d, want 1", got)
+	}
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamClose)); got != 1 {
+		t.Fatalf("stream closes = %d, want 1", got)
+	}
+}
+
+func TestExecuteStream4xxWatchdogUnblocksStalledRead(t *testing.T) {
+	unblocked := make(chan struct{})
+	f := &fakeCaller{}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+
+	f.responder = wrapWithCatalog(testCatalogJSON, func(method string, payload []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDoStream:
+			return hostOK(hostStreamStartResp{StatusCode: http.StatusBadRequest, StreamID: "up-stall"}), nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			<-unblocked
+			return hostOK(hostStreamReadResp{Error: "closed", Done: true}), nil
+		case pluginabi.MethodHostHTTPStreamClose:
+			select {
+			case <-unblocked:
+			default:
+				close(unblocked)
+			}
+			return hostOK(map[string]any{}), nil
+		default:
+			return hostOK(map[string]any{}), nil
+		}
+	})
+
+	shortTimeoutYAML := testValidYAML + "request-timeout: 20ms\n"
+	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(shortTimeoutYAML)); err != nil {
+		t.Fatalf("plugin.register: %v", err)
+	}
+
+	start := time.Now()
+	resp, err := m.HandleCall("executor.execute_stream",
+		execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), "down-stall"))
+	if err != nil {
+		t.Fatalf("execute_stream: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if env.OK || env.Error == nil || env.Error.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("want 400 error envelope, got: %+v", env)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stalled read took too long to unblock: %v", elapsed)
 	}
 }
 
@@ -1302,7 +1374,7 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 		eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("unknown route = %v", eErr)
 	}
-	if _, eErr := buildUpstreamRequest(catalog.Route("weird"), "m", "openai", nil, nil); eErr == nil ||
+	if _, eErr := buildUpstreamRequest(catalog.Route("weird"), "m", "openai", nil, nil, false); eErr == nil ||
 		eErr.Class != errclass.ClassTranslation {
 		t.Fatalf("unknown route build = %v", eErr)
 	}
@@ -1332,7 +1404,7 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 		t.Fatalf("malformed passthrough = %v", eErr)
 	}
 	long := strings.Repeat("x", 300)
-	if got := shared.RedactedSnippet(long); got != long[:80]+"..." {
+	if got := shared.RedactedSnippet(long); got != long[:256]+"..." {
 		t.Fatalf("snippet truncation = %d chars", len(got))
 	}
 	if got := shared.RedactedSnippet("short"); got != "short" {
@@ -1635,5 +1707,116 @@ func TestExecuteStreamBlockedEmitCannotWedgeTheProducer(t *testing.T) {
 	if len(downCloses) == 0 || !strings.Contains(string(downCloses[0].payload), `"down-blocked"`) ||
 		!strings.Contains(string(downCloses[0].payload), `"error"`) {
 		t.Fatalf("downstream close with error label missing: %v", downCloses)
+	}
+}
+
+const responsesToolsReqBody = `{"model":"x","input":[` +
+	`{"type":"additional_tools","tools":[{"type":"function","name":"extra_search","description":"extra","parameters":{"type":"object"}}]},` +
+	`{"type":"message","role":"user","content":"hi"}],"tools":[` +
+	`{"type":"namespace","name":"subagents","tools":[{"type":"function","name":"spawn_agent","description":"d","parameters":{"type":"object"}}]}]}`
+
+const responsesToolsUpstreamCC = `{"id":"r1","model":"glm-5.3","choices":[{"index":0,` +
+	`"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function",` +
+	`"function":{"name":"subagents__spawn_agent","arguments":"{}"}}]},` +
+	`"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`
+
+func assertFlattenedUpstream(t *testing.T, body []byte) {
+	t.Helper()
+	s := string(body)
+	if !strings.Contains(s, `"name":"subagents__spawn_agent"`) {
+		t.Fatalf("upstream missing flattened wire name: %s", s)
+	}
+	if !strings.Contains(s, `"extra_search"`) {
+		t.Fatalf("upstream missing merged additional_tools entry: %s", s)
+	}
+	if strings.Contains(s, "additional_tools") {
+		t.Fatalf("upstream still carries additional_tools item: %s", s)
+	}
+	if strings.Contains(s, `"type":"namespace"`) {
+		t.Fatalf("upstream still carries namespace tool: %s", s)
+	}
+}
+
+func assertRestoredResponsesPayload(t *testing.T, payload []byte) {
+	t.Helper()
+	var decoded struct {
+		Output []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("payload decode: %v (%s)", err, payload)
+	}
+	if len(decoded.Output) != 1 || decoded.Output[0].Type != "function_call" ||
+		decoded.Output[0].Name != "spawn_agent" || decoded.Output[0].Namespace != "subagents" {
+		t.Fatalf("identity not restored: %s", payload)
+	}
+	if strings.Contains(string(payload), "subagents__spawn_agent") {
+		t.Fatalf("wire name leaked downstream: %s", payload)
+	}
+}
+
+func TestExecutorResponsesToolsRoundTripNonStream(t *testing.T) {
+	f := &fakeCaller{}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+	f.responder = wrapWithCatalog(multiRouteCatalog, upstreamRouter(t, map[string]string{
+		"/v1/chat/completions": responsesToolsUpstreamCC,
+		"/v1/messages":         claudeResponseBody,
+		"/v1/responses":        responsesPassthrough,
+	}))
+	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	resp, err := m.HandleCall("executor.execute",
+		execReqBody("opencode-go/glm-5.3", "openai-response", []byte(responsesToolsReqBody), false))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	env := decodeEnv(t, resp)
+	if !env.OK {
+		t.Fatalf("execute envelope error: %+v", env.Error)
+	}
+	assertFlattenedUpstream(t, wireBody(t, lastWire(t, f, pluginabi.MethodHostHTTPDo), "body"))
+	var out pluginapi.ExecutorResponse
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatalf("result decode: %v", err)
+	}
+	assertRestoredResponsesPayload(t, out.Payload)
+}
+
+func TestExecutorResponsesToolsRoundTripStream(t *testing.T) {
+	m, f := newStreamManager(t, streamScript{
+		upstreamID: "up-tools",
+		frames: []string{
+			`data: {"id":"r1","model":"glm-5.3","choices":[{"index":0,"delta":{"role":"assistant"}}]}` + "\n\n",
+			`data: {"id":"r1","model":"glm-5.3","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"subagents__spawn_agent","arguments":"{}"}}]}}]}` + "\n\n",
+			`data: {"id":"r1","model":"glm-5.3","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+			"data: [DONE]\n\n",
+		},
+	})
+	resp, err := m.HandleCall("executor.execute_stream",
+		execStreamReqBody("opencode-go/glm-5.3", "openai-response", []byte(responsesToolsReqBody), "down-tools"))
+	if err != nil {
+		t.Fatalf("execute_stream: %v", err)
+	}
+	if env := decodeEnv(t, resp); !env.OK {
+		t.Fatalf("execute_stream envelope = %+v", env.Error)
+	}
+	streamWire := decodePayload(t, f.callsOf(pluginabi.MethodHostHTTPDoStream)[0])
+	assertFlattenedUpstream(t, wireBody(t, streamWire, "body"))
+	m.bridge.WaitForInFlight(5 * time.Second)
+	var blob strings.Builder
+	for _, e := range f.callsOf(pluginabi.MethodHostStreamEmit) {
+		blob.Write(wireBody(t, decodePayload(t, e), "payload"))
+	}
+	s := blob.String()
+	if !strings.Contains(s, `"namespace":"subagents"`) || !strings.Contains(s, `"spawn_agent"`) {
+		t.Fatalf("stream identity not restored:\n%s", s)
+	}
+	if strings.Contains(s, "subagents__spawn_agent") {
+		t.Fatalf("stream wire name leaked downstream:\n%s", s)
 	}
 }

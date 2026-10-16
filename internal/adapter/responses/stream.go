@@ -20,6 +20,11 @@ type StreamConverter struct {
 	framer *shared.SSEFramer
 	source string
 
+	// Passthrough restoration of flattened and custom tool calls;
+	// customItems holds the id and call_id of announced custom calls.
+	respTools   *shared.ResponseTools
+	customItems map[string]bool
+
 	// Response identity captured from response.created.
 	id      string
 	model   string
@@ -43,17 +48,19 @@ type StreamConverter struct {
 // NewStreamConverter builds a converter for sourceFormat ("openai",
 // "claude", "openai-response"); unknown formats fail on first Feed with
 // ClassUnsupported (same classes as BuildRequest).
-func NewStreamConverter(sourceFormat string) *StreamConverter {
+func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *StreamConverter {
 	sc := &StreamConverter{
 		// wantRaw only for the openai-response passthrough, which
 		// forwards verbatim blocks; a rebuilt single data line would
 		// embed raw newlines from legally multi-data-line frames and
 		// corrupt native framing. Conversion targets parse the joined
 		// payload and never read raw.
-		framer:    shared.NewSSEFramer(sourceFormat == "openai-response"),
-		source:    sourceFormat,
-		id:        "opencode-go",
-		textIndex: -1,
+		framer:      shared.NewSSEFramer(sourceFormat == "openai-response"),
+		source:      sourceFormat,
+		id:          "opencode-go",
+		textIndex:   -1,
+		respTools:   shared.ResponseToolContext(tools),
+		customItems: map[string]bool{},
 	}
 	sc.tracker = newToolCallTracker(sc.allocIndex)
 	return sc
@@ -365,6 +372,11 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 // an unparseable failure degrades to a retryable upstream error rather
 // than failing the passthrough contract.
 func (sc *StreamConverter) passthroughEvent(eventType, payload string, raw []byte) ([][]byte, bool, *errclass.Error) {
+	if sc.respTools.Restores() {
+		if events, handled := sc.restoreEvent(eventType, payload); handled {
+			return events, eventType == "response.completed" || eventType == "response.incomplete", nil
+		}
+	}
 	switch eventType {
 	case "response.completed", "response.incomplete":
 		return [][]byte{raw}, true, nil
@@ -375,6 +387,65 @@ func (sc *StreamConverter) passthroughEvent(eventType, payload string, raw []byt
 	default:
 		return [][]byte{raw}, false, nil
 	}
+}
+
+// restoreEvent rewrites passthrough frames that carry flattened or custom
+// tool calls back to their client-declared shapes: items regain their
+// name and namespace, custom calls become custom_tool_call items, their
+// argument deltas are withheld (wrapped JSON is not client input), and
+// their arguments.done becomes custom_tool_call_input.done. It reports
+// false for frames that should pass through verbatim.
+func (sc *StreamConverter) restoreEvent(eventType, payload string) ([][]byte, bool) {
+	var doc map[string]any
+	switch eventType {
+	case "response.output_item.added", "response.output_item.done",
+		"response.function_call_arguments.delta", "response.function_call_arguments.done",
+		"response.completed", "response.incomplete":
+		if json.Unmarshal([]byte(payload), &doc) != nil {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	switch eventType {
+	case "response.output_item.added", "response.output_item.done":
+		item, ok := doc["item"].(map[string]any)
+		if !ok || item["type"] != "function_call" {
+			return nil, false
+		}
+		custom, changed := sc.respTools.RestoreCall(item)
+		if !changed {
+			return nil, false
+		}
+		if custom {
+			for _, key := range []string{"id", "call_id"} {
+				if id, _ := item[key].(string); id != "" {
+					sc.customItems[id] = true
+				}
+			}
+		}
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		id, _ := doc["item_id"].(string)
+		if !sc.customItems[id] {
+			return nil, false
+		}
+		if eventType == "response.function_call_arguments.delta" {
+			return nil, true
+		}
+		args, _ := doc["arguments"].(string)
+		eventType = "response.custom_tool_call_input.done"
+		doc = map[string]any{"type": eventType, "item_id": id, "output_index": doc["output_index"],
+			"input": shared.UnwrapCustomToolInput(args)}
+	default:
+		response, ok := doc["response"].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if !restoreOutput(response, sc.respTools) {
+			return nil, false
+		}
+	}
+	return [][]byte{shared.SSEEvent(eventType, doc)}, true
 }
 
 // textDelta emits one output text delta: a plain Chat Completions content

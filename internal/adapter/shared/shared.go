@@ -678,16 +678,10 @@ func (e ResponsesEventEmitter) Created() []byte {
 
 // ItemAdded announces one output item before its first delta; item carries
 // the block-type-specific fields (message id/role/content, or function_call
-// call_id/name/arguments per the canonical call_id-only shape).
+// call_id/name/arguments per the canonical call_id-only shape). Calls to
+// tools declared as custom are announced as custom_tool_call items.
 func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) []byte {
-	if item["type"] == "function_call" {
-		name, _ := item["name"].(string)
-		identity := e.Tools.identity(name)
-		item["name"] = identity.name
-		if identity.namespace != "" {
-			item["namespace"] = identity.namespace
-		}
-	}
+	e.Tools.RestoreCall(item)
 	return SSEEvent("response.output_item.added", map[string]any{
 		"type": "response.output_item.added", "output_index": outputIndex, "item": item,
 	})
@@ -709,6 +703,80 @@ func (e ResponsesEventEmitter) ArgsDelta(itemID string, outputIndex int, delta s
 	})
 }
 
+// ToolDelta streams one tool-call fragment for the announced item. Function
+// calls forward the fragment verbatim. Custom tool calls stream their
+// unwrapped input instead: nothing is emitted until the accumulated
+// {"input":...} arguments decode, then only the bytes past *emitted, so
+// wrapper JSON never reaches the client. Returns nil when nothing is due.
+func (e ResponsesEventEmitter) ToolDelta(itemID string, outputIndex int, name, fragment, accumulated string, emitted *int) []byte {
+	if !e.Tools.identity(name).custom {
+		return e.ArgsDelta(itemID, outputIndex, fragment)
+	}
+	input := UnwrapCustomToolInput(accumulated)
+	if input == accumulated || *emitted >= len(input) {
+		return nil
+	}
+	delta := input[*emitted:]
+	*emitted = len(input)
+	return SSEEvent("response.custom_tool_call_input.delta", map[string]any{
+		"type": "response.custom_tool_call_input.delta", "item_id": itemID, "output_index": outputIndex, "delta": delta,
+	})
+}
+
+// ToolDone renders the arguments or custom input completion for one
+// rendered tool-call item, followed by its output_item.done.
+func (e ResponsesEventEmitter) ToolDone(outputIndex int, item RespItem) [][]byte {
+	if item.Type == "custom_tool_call" {
+		input := ""
+		if item.Input != nil {
+			input = *item.Input
+		}
+		done := SSEEvent("response.custom_tool_call_input.done", map[string]any{
+			"type": "response.custom_tool_call_input.done", "item_id": item.CallID, "output_index": outputIndex, "input": input,
+		})
+		return [][]byte{done, e.ItemDone(outputIndex, item)}
+	}
+	return [][]byte{e.ArgsDone(item.CallID, outputIndex, item.Name, item.Arguments), e.ItemDone(outputIndex, item)}
+}
+
+// TextDone renders the output_text completion for the announced message
+// item, emitted before response.completed.
+func (e ResponsesEventEmitter) TextDone(itemID string, outputIndex int, text string) []byte {
+	return SSEEvent("response.output_text.done", map[string]any{
+		"type": "response.output_text.done", "item_id": itemID, "output_index": outputIndex, "content_index": 0, "text": text,
+	})
+}
+
+// ContentPartDone renders the content_part completion for the announced
+// message item, emitted before response.completed.
+func (e ResponsesEventEmitter) ContentPartDone(itemID string, outputIndex int, text string) []byte {
+	return SSEEvent("response.content_part.done", map[string]any{
+		"type": "response.content_part.done", "item_id": itemID, "output_index": outputIndex, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": text},
+	})
+}
+
+// ArgsDone renders the function_call_arguments completion for the
+// announced function_call item, emitted before response.completed; name
+// is included only when non-empty.
+func (e ResponsesEventEmitter) ArgsDone(itemID string, outputIndex int, name, args string) []byte {
+	payload := map[string]any{
+		"type": "response.function_call_arguments.done", "item_id": itemID, "output_index": outputIndex, "arguments": args,
+	}
+	if name != "" {
+		payload["name"] = name
+	}
+	return SSEEvent("response.function_call_arguments.done", payload)
+}
+
+// ItemDone renders the output_item completion for one rendered output
+// item, emitted before response.completed.
+func (e ResponsesEventEmitter) ItemDone(outputIndex int, item any) []byte {
+	return SSEEvent("response.output_item.done", map[string]any{
+		"type": "response.output_item.done", "output_index": outputIndex, "item": item,
+	})
+}
+
 // Completed renders the terminal response.completed event: status from the
 // route's status mapping, usage always attached (F-R6), and output items
 // rendered by the caller through OutputAssembler.
@@ -726,27 +794,64 @@ func (e ResponsesEventEmitter) Completed(status string, usage ResponsesUsage, ou
 // messages — never an upstream body echo (FR-011).
 func RedactedSnippet(s string) string {
 	s = errclass.Redact(s)
-	if len(s) > 80 {
-		return s[:80] + "..."
+	if len(s) > 256 {
+		return s[:256] + "..."
 	}
 	return s
 }
 
 // snippetBound bounds redaction work: only the head of an oversized error
-// body can reach the 80-char snippet, so every upstream >=400 site
+// body can reach the 256-char snippet, so every upstream >=400 site
 // truncates to this size before scanning (FR-011).
 const snippetBound = 4096
 
+// extractErrorMessage attempts to extract a clean, human-readable error
+// message from upstream JSON error bodies (e.g. OpenAI or Anthropic format).
+func extractErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var probe struct {
+		Error   any    `json:"error"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return ""
+	}
+	switch v := probe.Error.(type) {
+	case string:
+		if v != "" {
+			return strings.TrimSpace(v)
+		}
+	case map[string]any:
+		if m, ok := v["message"].(string); ok && m != "" {
+			return strings.TrimSpace(m)
+		}
+	}
+	if probe.Message != "" {
+		return strings.TrimSpace(probe.Message)
+	}
+	if probe.Detail != "" {
+		return strings.TrimSpace(probe.Detail)
+	}
+	return ""
+}
+
 // UpstreamStatusError classifies an upstream >=400 response body into one
 // kernel used by every adapter and the executor: the body is truncated to
-// its head before redacted-snippet extraction, then classified per §7 via
-// errclass.FromStatus. One kernel keeps bounding and redaction from
-// diverging across call sites.
+// its head, decoded for human-readable error messages if JSON, or fallen
+// back to a redacted snippet, then classified per §7 via errclass.FromStatus.
+// One kernel keeps bounding and redaction from diverging across call sites.
 func UpstreamStatusError(status int, body []byte) *errclass.Error {
 	if len(body) > snippetBound {
 		body = body[:snippetBound]
 	}
-	return errclass.FromStatus(status, RedactedSnippet(string(body)))
+	msg := extractErrorMessage(body)
+	if msg == "" {
+		msg = string(body)
+	}
+	return errclass.FromStatus(status, RedactedSnippet(msg))
 }
 
 // ResponsesUsage is the token-usage block of synthesized Responses
@@ -974,6 +1079,11 @@ func (r *ResponsesRequest) DecodeInputItems() ([]RespItem, *errclass.Error) {
 	if err := json.Unmarshal(r.Input, &items); err != nil {
 		return nil, errclass.Translation("input must be a string or an array of items: " + err.Error())
 	}
+	for i := range items {
+		if items[i].Type == "" && strings.TrimSpace(items[i].Role) != "" {
+			items[i].Type = "message"
+		}
+	}
 	return items, nil
 }
 
@@ -993,6 +1103,7 @@ type RespItem struct {
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments string          `json:"arguments,omitempty"`
+	Input     *string         `json:"input,omitempty"` // custom_tool_call freeform input
 	Output    json.RawMessage `json:"output,omitempty"`
 	Summary   []struct {
 		Text string `json:"text"`
@@ -1501,9 +1612,17 @@ func (a *OutputAssembler) AddText(fragment string) {
 
 // AppendFunctionCall adds one function_call item in arrival order;
 // arguments pass through verbatim — callers apply the absent-arguments
-// policy themselves.
+// policy themselves. Calls to custom tools become custom_tool_call items
+// carrying the unwrapped input.
 func (a *OutputAssembler) AppendFunctionCall(callID, name, args string) {
 	identity := a.tools.identity(name)
+	if identity.custom {
+		input := UnwrapCustomToolInput(args)
+		a.items = append(a.items, RespItem{
+			Type: "custom_tool_call", CallID: callID, Name: identity.name, Namespace: identity.namespace, Input: &input,
+		})
+		return
+	}
 	a.items = append(a.items, RespItem{
 		Type: "function_call", CallID: callID, Name: identity.name, Namespace: identity.namespace, Arguments: args,
 	})

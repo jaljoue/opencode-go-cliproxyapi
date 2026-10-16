@@ -33,7 +33,7 @@ func TestResponsesAdditionalToolsMerge(t *testing.T) {
 	if r.Tools[0].Description != "original" || !strings.Contains(string(r.Tools[0].Parameters), `"required":["q"]`) {
 		t.Fatalf("first declaration lost metadata: %+v", r.Tools[0])
 	}
-	if len(items) != 3 || items[0].Type != "message" || items[1].CallID != "c1" || items[2].Output != "found" {
+	if len(items) != 3 || items[0].Type != "message" || items[1].CallID != "c1" || string(items[2].Output) != `"found"` {
 		t.Fatalf("conversation changed: %+v", items)
 	}
 }
@@ -89,7 +89,7 @@ func TestHostedSearchChoiceAndHistory(t *testing.T) {
 		{"named missing tool", `{"tools":[{"type":"web_search"},{"type":"function","name":"read"}],"tool_choice":{"type":"function","name":"missing"}}`, "names a tool that is unavailable"},
 		{"search history", `{"input":[{"type":"web_search_call","id":"search_1","status":"completed"}]}`, "history cannot be translated"},
 		{"unknown hosted tool", `{"tools":[{"type":"unrecognized_hosted_tool"}]}`, "unsupported tool type"},
-		{"custom tool", `{"tools":[{"type":"custom","name":"patch"}]}`, "unsupported tool type"},
+		{"computer use tool", `{"tools":[{"type":"computer_use_preview"}]}`, "unsupported tool type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var r ResponsesRequest
@@ -127,7 +127,7 @@ func TestResponsesAdditionalToolsValidation(t *testing.T) {
 		{"null tools", `{"input":[{"type":"additional_tools","tools":null}]}`, errclass.ClassTranslation},
 		{"missing name", `{"input":[{"type":"additional_tools","tools":[{"type":"function"}]}]}`, errclass.ClassTranslation},
 		{"unsupported tool", `{"input":[{"type":"additional_tools","tools":[{"type":"web_search"}]}]}`, errclass.ClassUnsupported},
-		{"unsupported namespace child", `{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"n","tools":[{"type":"custom","name":"patch"}]}]}]}`, errclass.ClassUnsupported},
+		{"unsupported namespace child", `{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"n","tools":[{"type":"computer_use_preview","name":"screen"}]}]}]}`, errclass.ClassUnsupported},
 		{"missing namespace children", `{"tools":[{"type":"namespace","name":"n"}]}`, errclass.ClassTranslation},
 		{"name collision", `{"tools":[{"type":"function","name":"n__read"}],"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"n","tools":[{"type":"function","name":"read"}]}]}]}`, errclass.ClassTranslation},
 		{"invalid namespace choice", `{"tool_choice":{"type":"function","name":"read","namespace":123}}`, errclass.ClassTranslation},
@@ -151,5 +151,64 @@ func TestResponsesAdditionalToolsValidation(t *testing.T) {
 	items, eErr := tools.Normalize(&r, "/v1/chat/completions")
 	if eErr != nil || len(items) != 0 || len(r.Tools) != 0 {
 		t.Fatalf("empty declaration = %v, %v", items, eErr)
+	}
+}
+
+func TestResponsesCustomToolsTranslate(t *testing.T) {
+	var r ResponsesRequest
+	body := `{
+		"tools":[{"type":"custom","name":"apply_patch","description":"Edit files","format":{"type":"grammar"}},{"type":"tool_search"},{"type":"image_generation"}],
+		"input":[
+			{"type":"message","role":"user","content":"edit"},
+			{"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
+			{"type":"custom_tool_call_output","call_id":"c1","output":"done"}
+		]}`
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		t.Fatal(err)
+	}
+	tools := ResponseTools{StripHostedWebSearch: true}
+	items, eErr := tools.Normalize(&r, "/v1/chat/completions")
+	if eErr != nil {
+		t.Fatal(eErr)
+	}
+	if len(r.Tools) != 1 || r.Tools[0].Type != "function" || r.Tools[0].Name != "apply_patch" || r.Tools[0].Description != "Edit files" ||
+		!strings.Contains(string(r.Tools[0].Parameters), `"required":["input"]`) {
+		t.Fatalf("custom tool declaration = %+v", r.Tools)
+	}
+	if len(items) != 3 || items[1].Type != "function_call" || items[1].Arguments != `{"input":"*** Begin Patch\n*** End Patch"}` || items[1].Input != nil {
+		t.Fatalf("custom call history = %+v", items)
+	}
+	if items[2].Type != "function_call_output" || items[2].CallID != "c1" {
+		t.Fatalf("custom output history = %+v", items[2])
+	}
+	if !tools.identity("apply_patch").custom {
+		t.Fatal("custom identity not retained")
+	}
+}
+
+func TestResponsesHostedToolsKeptWithoutStripping(t *testing.T) {
+	for _, kind := range []string{"tool_search", "image_generation"} {
+		var r ResponsesRequest
+		if err := json.Unmarshal([]byte(`{"tools":[{"type":"`+kind+`"}]}`), &r); err != nil {
+			t.Fatal(err)
+		}
+		var tools ResponseTools
+		if _, eErr := tools.Normalize(&r, "/v1/messages"); eErr == nil || eErr.Class != errclass.ClassUnsupported {
+			t.Fatalf("%s error = %v", kind, eErr)
+		}
+	}
+}
+
+func TestUnwrapCustomToolInput(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"input":"raw text"}`: "raw text",
+		`{"input":""}`:         "",
+		`{"other":"x"}`:        `{"other":"x"}`,
+		`{"input":`:            `{"input":`,
+		`not json`:             "not json",
+	} {
+		if got := UnwrapCustomToolInput(args); got != want {
+			t.Errorf("UnwrapCustomToolInput(%q) = %q, want %q", args, got, want)
+		}
 	}
 }

@@ -55,7 +55,7 @@ type respResultIn struct {
 // passes through; "openai" and "claude" are converted, preserving text,
 // function calls, terminal status, and usage. Unknown formats are
 // ClassUnsupported; malformed upstream bodies are ClassTranslation.
-func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte) ([]byte, *errclass.Error) {
+func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	if status >= 400 {
 		return nil, shared.UpstreamStatusError(status, upstreamBody)
 	}
@@ -64,7 +64,7 @@ func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []by
 		if !json.Valid(upstreamBody) {
 			return nil, errclass.Translation("malformed Responses response JSON")
 		}
-		return upstreamBody, nil
+		return restorePassthroughCalls(upstreamBody, shared.ResponseToolContext(tools)), nil
 	case "openai":
 		return responsesToChat(upstreamBody)
 	case "claude":
@@ -72,6 +72,41 @@ func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []by
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
+}
+
+// restorePassthroughCalls returns flattened and custom tool calls in a
+// native Responses body to their client-declared shapes. Bodies are
+// returned untouched when the request declared no such tools.
+func restorePassthroughCalls(body []byte, rt *shared.ResponseTools) []byte {
+	if !rt.Restores() {
+		return body
+	}
+	var doc map[string]any
+	if json.Unmarshal(body, &doc) != nil {
+		return body
+	}
+	if !restoreOutput(doc, rt) {
+		return body
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// restoreOutput applies RestoreCall to every item of a response object's
+// output array and reports whether any item changed.
+func restoreOutput(response map[string]any, rt *shared.ResponseTools) bool {
+	output, _ := response["output"].([]any)
+	changed := false
+	for _, entry := range output {
+		if item, ok := entry.(map[string]any); ok {
+			_, c := rt.RestoreCall(item)
+			changed = changed || c
+		}
+	}
+	return changed
 }
 
 // decodeResp validates and decodes an upstream non-stream Responses body;

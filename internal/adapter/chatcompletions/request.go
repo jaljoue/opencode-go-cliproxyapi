@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/catalog"
@@ -50,8 +50,9 @@ func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *plu
 }
 
 // buildOpenAIRequest rewrites the top-level model field of an OpenAI request
-// body to upstreamModel and strips any malformed top-level thinking object.
-// DeepSeek models fail if thinking lacks a valid string type field.
+// body to upstreamModel, normalizes role:"developer" messages to role:"system",
+// and strips any malformed top-level thinking object. DeepSeek models fail if
+// thinking lacks a valid string type field or if messages contain role:"developer".
 func buildOpenAIRequest(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
 	var req map[string]json.RawMessage
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -65,10 +66,30 @@ func buildOpenAIRequest(upstreamModel string, body []byte) ([]byte, *errclass.Er
 	if hasThinking && !validThinking {
 		delete(req, "thinking")
 	}
-	if raw, ok := req["model"]; ok && string(raw) == `"`+upstreamModel+`"` && (validThinking || !hasThinking) {
+
+	var msgsModified bool
+	if rawMsgs, ok := req["messages"]; ok && strings.Contains(string(rawMsgs), `"developer"`) {
+		var msgs []map[string]json.RawMessage
+		if err := json.Unmarshal(rawMsgs, &msgs); err == nil {
+			for _, m := range msgs {
+				var role string
+				if err := json.Unmarshal(m["role"], &role); err == nil && role == "developer" {
+					m["role"] = json.RawMessage(`"system"`)
+					msgsModified = true
+				}
+			}
+			if msgsModified {
+				if b, err := json.Marshal(msgs); err == nil {
+					req["messages"] = b
+				}
+			}
+		}
+	}
+	if raw, ok := req["model"]; ok && string(raw) == `"`+upstreamModel+`"` && (validThinking || !hasThinking) && !msgsModified {
 		return body, nil
 	}
 	req["model"] = json.RawMessage(`"` + upstreamModel + `"`)
+
 	b, err := json.Marshal(req)
 	if err != nil {
 		return nil, errclass.Translation("model id cannot be represented as JSON")
@@ -333,9 +354,6 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 		out.MaxTokens = src.MaxOutputTokens
 	}
 	if src.Reasoning != nil && src.Reasoning.Effort != "" {
-		if eErr := thinking.ValidateEffort(src.Reasoning.Effort, ts); eErr != nil {
-			return nil, eErr
-		}
 		out.ReasoningEffort = strings.ToLower(strings.TrimSpace(src.Reasoning.Effort))
 	}
 	kind, tcName, eErr := shared.DecodeToolChoice(src.ToolChoice)

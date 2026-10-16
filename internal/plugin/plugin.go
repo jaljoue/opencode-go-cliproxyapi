@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/catalog"
 	"opencode-go-cliproxyapi/internal/config"
@@ -24,7 +24,7 @@ const ProviderID = "opencode-go"
 // pluginName / pluginVersion are reported in registration metadata.
 const (
 	pluginName    = "opencode-go-cliproxyapi"
-	pluginVersion = "0.1.7"
+	pluginVersion = "0.1.10"
 )
 
 // githubRepoURL satisfies the host's validPlugin gate (host.go
@@ -168,6 +168,71 @@ type registrationResult struct {
 	Capabilities  capabilities       `json:"capabilities"`
 }
 
+func pluginConfigFields() []pluginapi.ConfigField {
+	return []pluginapi.ConfigField{
+		{
+			Name:        "api-keys",
+			Type:        pluginapi.ConfigFieldTypeArray,
+			Description: "List of OpenCode Go API keys (`- value: ...`). Supports ${ENV_VAR} expansion.",
+		},
+		{
+			Name:        "base-url",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "Upstream base URL (default: https://opencode.ai/inference/go/v1).",
+		},
+		{
+			Name:        "catalog-url",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "Optional catalog discovery URL (default: {base-url}/models).",
+		},
+		{
+			Name:        "console-url",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "OpenCode Console root used by quota refreshes for the Go plan and account email (default: https://opencode.ai/console).",
+		},
+		{
+			Name:        "model-prefix",
+			Type:        pluginapi.ConfigFieldTypeObject,
+			Description: "Client-facing model ID prefix configuration (`enabled: bool`, `value: string`).",
+		},
+		{
+			Name:        "catalog",
+			Type:        pluginapi.ConfigFieldTypeObject,
+			Description: "Catalog discovery settings (`refresh-interval: string`, `stale-while-unavailable: bool`).",
+		},
+		{
+			Name:        "protocols",
+			Type:        pluginapi.ConfigFieldTypeObject,
+			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`, `gemini: bool`).",
+		},
+		{
+			Name:        "route-overrides",
+			Type:        pluginapi.ConfigFieldTypeObject,
+			Description: "Explicit route overrides per model (`<model-id>: {protocol: string, endpoint: string}`).",
+		},
+		{
+			Name:        "strip-hosted-web-search",
+			Type:        pluginapi.ConfigFieldTypeBoolean,
+			Description: "Omit optional hosted web_search declarations on translated Responses requests (default: true).",
+		},
+		{
+			Name:        "request-timeout",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "Upstream HTTP request timeout (default: 5m).",
+		},
+		{
+			Name:        "max-response-bytes",
+			Type:        pluginapi.ConfigFieldTypeInteger,
+			Description: "Max non-streaming response body size in bytes (default: 67108864).",
+		},
+		{
+			Name:        "allow-http",
+			Type:        pluginapi.ConfigFieldTypeBoolean,
+			Description: "Allow plain http:// URLs for local testing/mocking (default: false).",
+		},
+	}
+}
+
 func registrationEnvelope() []byte {
 	formats := []string{"openai", "claude", "openai-response"}
 	return okEnvelope(registrationResult{
@@ -177,7 +242,7 @@ func registrationEnvelope() []byte {
 			Version:          pluginVersion,
 			Author:           pluginName,
 			GitHubRepository: githubRepoURL,
-			ConfigFields:     []pluginapi.ConfigField{},
+			ConfigFields:     pluginConfigFields(),
 		},
 		Capabilities: capabilities{
 			ModelProvider:         true,

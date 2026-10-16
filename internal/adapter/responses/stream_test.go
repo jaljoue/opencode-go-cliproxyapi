@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
 
@@ -108,6 +109,84 @@ func TestPassthroughVerbatimAndTerminal(t *testing.T) {
 	}
 	if ev, _ := parseSSE(t, events[2]); ev != "response.completed" {
 		t.Errorf("last event = %q", ev)
+	}
+}
+
+func TestPassthroughCustomToolCallRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	r := &shared.ResponsesRequest{Tools: []shared.RespTool{{Type: "custom", Name: "exec"}}}
+	if _, eErr := rt.Normalize(r, EndpointPath); eErr != nil {
+		t.Fatalf("Normalize: %v", eErr)
+	}
+	sc := NewStreamConverter("openai-response", rt)
+	raw := frame("response.output_item.added", `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":""}}`) +
+		frame("response.function_call_arguments.done", `{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\"input\":\"ls -la\"}"}`) +
+		frame("response.output_item.done", `{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec","arguments":"{\"input\":\"ls -la\"}"}}`)
+	events, done, eErr := feedChunks(t, sc, chunked(raw))
+	if eErr != nil || done {
+		t.Fatalf("done=%v err=%v", done, eErr)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events=%d: %s", len(events), events)
+	}
+	ev, data := parseSSE(t, events[0])
+	if ev != "response.output_item.added" {
+		t.Fatalf("event 0 = %q", ev)
+	}
+	var added map[string]any
+	if err := json.Unmarshal([]byte(data), &added); err != nil {
+		t.Fatalf("added not JSON: %v", err)
+	}
+	item := added["item"].(map[string]any)
+	if item["type"] != "custom_tool_call" || item["input"] != "" {
+		t.Fatalf("added item not restored: %v", item)
+	}
+	if _, has := item["arguments"]; has {
+		t.Fatalf("added arguments not deleted: %v", item)
+	}
+	ev, data = parseSSE(t, events[1])
+	if ev != "response.custom_tool_call_input.done" {
+		t.Fatalf("event 1 = %q, want response.custom_tool_call_input.done", ev)
+	}
+	var inputDone map[string]any
+	if err := json.Unmarshal([]byte(data), &inputDone); err != nil {
+		t.Fatalf("input done not JSON: %v", err)
+	}
+	if inputDone["type"] != "response.custom_tool_call_input.done" || inputDone["input"] != "ls -la" {
+		t.Fatalf("input done not restored: %v", inputDone)
+	}
+	ev, data = parseSSE(t, events[2])
+	if ev != "response.output_item.done" {
+		t.Fatalf("event 2 = %q", ev)
+	}
+	var doneEv map[string]any
+	if err := json.Unmarshal([]byte(data), &doneEv); err != nil {
+		t.Fatalf("done not JSON: %v", err)
+	}
+	doneItem := doneEv["item"].(map[string]any)
+	if doneItem["type"] != "custom_tool_call" || doneItem["input"] != "ls -la" {
+		t.Fatalf("done item not restored: %v", doneItem)
+	}
+	if _, has := doneItem["arguments"]; has {
+		t.Fatalf("done arguments not deleted: %v", doneItem)
+	}
+}
+
+func TestPassthroughNonCustomToolUntouched(t *testing.T) {
+	rt := shared.NewResponseTools()
+	r := &shared.ResponsesRequest{Tools: []shared.RespTool{{Type: "function", Name: "lookup"}}}
+	if _, eErr := rt.Normalize(r, EndpointPath); eErr != nil {
+		t.Fatalf("Normalize: %v", eErr)
+	}
+	sc := NewStreamConverter("openai-response", rt)
+	payload := `{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`
+	want := frame("response.output_item.added", payload)
+	events, _, eErr := feedChunks(t, sc, chunked(want))
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	if string(events[0]) != want {
+		t.Errorf("non-custom frame not verbatim:\n got %q\nwant %q", events[0], want)
 	}
 }
 
@@ -836,7 +915,7 @@ func TestCRLFStreamTolerated(t *testing.T) {
 }
 
 func TestMalformedPayloadTranslationError(t *testing.T) {
-	longBad := `{"delta":"` + strings.Repeat("x", 100)
+	longBad := `{"delta":"` + strings.Repeat("x", 300)
 	sc := NewStreamConverter("openai")
 	events, _, eErr := feedChunks(t, sc, []string{
 		frame("response.created", createdPayload),
@@ -851,7 +930,7 @@ func TestMalformedPayloadTranslationError(t *testing.T) {
 	if !strings.Contains(eErr.Message, "malformed response.output_text.delta event payload") {
 		t.Errorf("message = %q", eErr.Message)
 	}
-	if !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 200 {
+	if !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 350 {
 		t.Errorf("snippet not truncated/redacted: %q", eErr.Message)
 	}
 	short, _, eErr := runStream(t, "openai", frame("response.output_text.delta", `{bad`))

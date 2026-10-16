@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/config"
 )
@@ -44,7 +44,7 @@ func testCfg() config.Config {
 		ModelPrefix:      config.ModelPrefix{Enabled: true, Value: "opencode-go"},
 		MaxResponseBytes: 1 << 20,
 		Catalog:          config.Catalog{StaleWhileUnavailable: true},
-		Protocols:        config.Protocols{ChatCompletions: true, Messages: true, Responses: true},
+		Protocols:        config.Protocols{ChatCompletions: true, Messages: true, Responses: true, Gemini: true},
 	}
 }
 
@@ -254,24 +254,28 @@ func TestCompatExactIDs(t *testing.T) {
 
 func TestCompatPrefixFallback(t *testing.T) {
 	cases := map[string]Route{
-		"glm-9.9":          RouteChatCompletions,
-		"qwen99-max":       RouteMessages,
-		"gpt-9":            RouteResponses,
-		"muse-spark-9":     RouteResponses,
-		"kimi-k99":         RouteChatCompletions,
-		"deepseek-v99":     RouteChatCompletions,
-		"minimax-m99":      RouteMessages,
-		"claude-haiku-5-5": RouteMessages,
-		"mimo-x":           RouteChatCompletions,
-		"hy3-extreme":      RouteChatCompletions,
-		"hy4-turbo":        RouteChatCompletions,
-		"longcat-max":      RouteChatCompletions,
-		"GLM-5.2":          RouteChatCompletions,
-		"DeepSeek-V4-X":    RouteChatCompletions,
-		"HY3":              RouteChatCompletions,
-		"HY4":              RouteChatCompletions,
-		"GPT-5.6-LUNA-X":   RouteResponses,
-		"QWEN4-MAX":        RouteMessages,
+		"glm-9.9":                    RouteChatCompletions,
+		"qwen99-max":                 RouteMessages,
+		"gpt-9":                      RouteResponses,
+		"muse-spark-9":               RouteResponses,
+		"kimi-k99":                   RouteChatCompletions,
+		"deepseek-v99":               RouteChatCompletions,
+		"minimax-m99":                RouteMessages,
+		"claude-haiku-5-5":           RouteMessages,
+		"gemini-4-argon-contributor": RouteGemini,
+		"space-bunny":                RouteChatCompletions,
+		"step-5-preview-free":        RouteChatCompletions,
+		"cat-jam-free":               RouteChatCompletions,
+		"mimo-x":                     RouteChatCompletions,
+		"hy3-extreme":                RouteChatCompletions,
+		"hy4-turbo":                  RouteChatCompletions,
+		"longcat-max":                RouteChatCompletions,
+		"GLM-5.2":                    RouteChatCompletions,
+		"DeepSeek-V4-X":              RouteChatCompletions,
+		"HY3":                        RouteChatCompletions,
+		"HY4":                        RouteChatCompletions,
+		"GPT-5.6-LUNA-X":             RouteResponses,
+		"QWEN4-MAX":                  RouteMessages,
 	}
 	var sb strings.Builder
 	sb.WriteString(`{"data":[`)
@@ -1114,5 +1118,24 @@ func TestRefreshDataKeyAbsentVsEmpty(t *testing.T) {
 	}
 	if got := m.Warnings(); len(got) != 0 {
 		t.Fatalf("intended clear must stay silent, got %v", got)
+	}
+}
+
+func TestGeminiRoutePerModelEndpoint(t *testing.T) {
+	body := `{"data":[{"id":"gemini-4-argon-contributor"}]}`
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
+	m := newManager(testCfg(), fc)
+	mustRefresh(t, m)
+	models := m.Models()
+	if len(models) != 1 || models[0].Protocol != RouteGemini || models[0].EndpointPath != "/v1/models/gemini-4-argon-contributor" {
+		t.Fatalf("gemini record = %+v", models)
+	}
+
+	cfg := testCfg()
+	cfg.Protocols.Gemini = false
+	m = newManager(cfg, fc)
+	mustRefresh(t, m)
+	if len(m.Models()) != 0 || len(m.Unsupported()) != 1 || !strings.Contains(m.Unsupported()[0].Reason, "gemini disabled") {
+		t.Fatalf("disabled gemini: models=%+v unsupported=%+v", m.Models(), m.Unsupported())
 	}
 }

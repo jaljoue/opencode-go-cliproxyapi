@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/catalog"
 	"opencode-go-cliproxyapi/internal/config"
@@ -447,7 +447,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
 	}
 	if reg.Metadata.Name != "opencode-go-cliproxyapi" || reg.Metadata.Version != pluginVersion ||
-		len(reg.Metadata.ConfigFields) != 0 {
+		len(reg.Metadata.ConfigFields) != 12 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -465,7 +465,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	if wire["method"] != http.MethodGet {
 		t.Fatalf("bridged method = %v, want GET", wire["method"])
 	}
-	if wire["url"] != "https://opencode.ai/zen/go/v1/models" {
+	if wire["url"] != "https://opencode.ai/inference/go/v1/models" {
 		t.Fatalf("bridged url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -490,6 +490,53 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	decodeResult(t, mustHandle(t, m, "model.for_auth", []byte("{}")), &forAuth)
 	if forAuth.Provider != ProviderID || len(forAuth.Models) != 1 || forAuth.Models[0].ID != got.ID {
 		t.Fatalf("for_auth = %+v", forAuth)
+	}
+}
+
+func TestRegistrationConfigFields(t *testing.T) {
+	m, _ := newTestManager(catalogResponder(true, testCatalogJSON))
+	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+
+	resp, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var reg registrationResult
+	decodeResult(t, resp, &reg)
+
+	expectedFields := []struct {
+		name string
+		typ  pluginapi.ConfigFieldType
+	}{
+		{"api-keys", pluginapi.ConfigFieldTypeArray},
+		{"base-url", pluginapi.ConfigFieldTypeString},
+		{"catalog-url", pluginapi.ConfigFieldTypeString},
+		{"console-url", pluginapi.ConfigFieldTypeString},
+		{"model-prefix", pluginapi.ConfigFieldTypeObject},
+		{"catalog", pluginapi.ConfigFieldTypeObject},
+		{"protocols", pluginapi.ConfigFieldTypeObject},
+		{"route-overrides", pluginapi.ConfigFieldTypeObject},
+		{"strip-hosted-web-search", pluginapi.ConfigFieldTypeBoolean},
+		{"request-timeout", pluginapi.ConfigFieldTypeString},
+		{"max-response-bytes", pluginapi.ConfigFieldTypeInteger},
+		{"allow-http", pluginapi.ConfigFieldTypeBoolean},
+	}
+
+	if len(reg.Metadata.ConfigFields) != len(expectedFields) {
+		t.Fatalf("len(ConfigFields) = %d, want %d", len(reg.Metadata.ConfigFields), len(expectedFields))
+	}
+
+	for i, want := range expectedFields {
+		got := reg.Metadata.ConfigFields[i]
+		if got.Name != want.name {
+			t.Errorf("field[%d].Name = %q, want %q", i, got.Name, want.name)
+		}
+		if got.Type != want.typ {
+			t.Errorf("field[%d].Type = %q, want %q", i, got.Type, want.typ)
+		}
+		if got.Description == "" {
+			t.Errorf("field[%d].Description is empty", i)
+		}
 	}
 }
 
@@ -1105,7 +1152,7 @@ func TestShutdownAbortsInFlightTickRefresh(t *testing.T) {
 // failure and the next success, and background ticks fetch the NEW
 // catalog-url instead of the old one forever.
 func TestReconfigureFailedRefreshSeedsCarryoverThenFetchesNewURL(t *testing.T) {
-	oldURL := "https://opencode.ai/zen/go/v1/models"
+	oldURL := "https://opencode.ai/inference/go/v1/models"
 	newURL := "https://mirror.test/api/models"
 	catalogV1 := `{"data":[{"id":"glm-5.3"}]}`
 	catalogV2 := `{"data":[{"id":"minimax-m3"}]}`

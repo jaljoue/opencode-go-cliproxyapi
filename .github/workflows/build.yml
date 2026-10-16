@@ -214,6 +214,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y clang lld wget
+          cat << 'EOF' | sudo tee /usr/local/bin/wget >/dev/null
+          #!/bin/bash
+          args=()
+          for a in "$@"; do
+            if [[ "$a" == *"download.freebsd.org/releases/"*"/14.3-RELEASE/base.txz"* ]]; then
+              args+=("${a/download.freebsd.org\/releases/archive.freebsd.org\/old-releases}")
+            else
+              args+=("$a")
+            fi
+          done
+          exec /usr/bin/wget "${args[@]}"
+          EOF
+          sudo chmod +x /usr/local/bin/wget
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45

@@ -17,10 +17,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/adapter/chatcompletions"
+	"opencode-go-cliproxyapi/internal/adapter/gemini"
 	"opencode-go-cliproxyapi/internal/adapter/messages"
 	"opencode-go-cliproxyapi/internal/adapter/responses"
 	"opencode-go-cliproxyapi/internal/adapter/shared"
@@ -107,12 +108,12 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		return requestErrorEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, false, &res.tools)
 	if eErr != nil {
 		return requestErrorEnvelope(eErr), nil
 	}
 
-	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
+	url := upstreamURL(res, false)
 	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.rec.Protocol, url, len(res.cfg.APIKeys))
 	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
@@ -135,23 +136,40 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
 		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
 	}
-	converted, eErr := convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body, &res.tools)
+	var converted []byte
+	if res.rec.Protocol == catalog.RouteGemini {
+		converted, eErr = gemini.ConvertNonStreamResponse(req.SourceFormat, res.rec.UpstreamID, req.OriginalRequest, upstreamBody, resp.StatusCode, resp.Body)
+	} else {
+		converted, eErr = convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body, &res.tools)
+	}
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: converted, Headers: resp.Headers}), nil
 }
 
-func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
+func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, stream bool, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch route {
+	case catalog.RouteGemini:
+		return gemini.BuildRequest(upstreamModel, sourceFormat, sourceBody, stream)
 	case catalog.RouteChatCompletions:
 		return chatcompletions.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	case catalog.RouteMessages:
 		return messages.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	case catalog.RouteResponses:
-		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts)
+		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
 	}
 	return nil, errclass.Translation("unsupported route")
+}
+
+// upstreamURL joins the record's endpoint onto the base URL. The native
+// Gemini API selects the action and streaming mode in the path.
+func upstreamURL(res *resolvedExecution, stream bool) string {
+	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
+	if res.rec.Protocol == catalog.RouteGemini {
+		url += gemini.Action(stream)
+	}
+	return url
 }
 
 func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header {
@@ -307,7 +325,7 @@ func convertNonStream(route catalog.Route, sourceFormat string, status int, body
 	case catalog.RouteMessages:
 		return messages.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	case catalog.RouteResponses:
-		return responses.ConvertNonStreamResponse(sourceFormat, status, body)
+		return responses.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
 	}
 	return nil, errclass.Translation("unsupported route")
 }
@@ -343,6 +361,7 @@ type streamConverter interface {
 var (
 	_ interface{ Flush() [][]byte } = (*chatcompletions.StreamConverter)(nil)
 	_ interface{ Flush() [][]byte } = (*messages.StreamConverter)(nil)
+	_ interface{ Flush() [][]byte } = (*gemini.StreamConverter)(nil)
 )
 
 func newStreamConverter(route catalog.Route, sourceFormat string, tools ...*shared.ResponseTools) streamConverter {
@@ -350,7 +369,7 @@ func newStreamConverter(route catalog.Route, sourceFormat string, tools ...*shar
 	case catalog.RouteMessages:
 		return messages.NewStreamConverter(sourceFormat, tools...)
 	case catalog.RouteResponses:
-		return responses.NewStreamConverter(sourceFormat)
+		return responses.NewStreamConverter(sourceFormat, tools...)
 	}
 	return chatcompletions.NewStreamConverter(sourceFormat, tools...)
 }
@@ -383,12 +402,12 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return requestErrorEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, true, &res.tools)
 	if eErr != nil {
 		return requestErrorEnvelope(eErr), nil
 	}
 
-	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
+	url := upstreamURL(res, true)
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
 	defer cancel()
@@ -403,8 +422,16 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(errclass.FromNetwork(err)), nil
 	}
 	if st >= 400 {
-		_ = m.bridge.StreamClose(id)
-		return classEnvelope(errclass.FromStatus(st, "")), nil
+		var body []byte
+		if id != "" {
+			watchdog := time.AfterFunc(res.cfg.RequestTimeout, func() {
+				_ = m.bridge.StreamClose(id)
+			})
+			body, _, _, _ = m.bridge.StreamRead(id)
+			watchdog.Stop()
+			_ = m.bridge.StreamClose(id)
+		}
+		return classEnvelope(shared.UpstreamStatusError(st, body)), nil
 	}
 
 	downID := req.StreamID
@@ -415,12 +442,18 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		if m.bridge != nil {
 			defer m.bridge.inFlight.Done()
 		}
-		m.pumpStream(downID, id, res, req.SourceFormat)
+		var conv streamConverter
+		if res.rec.Protocol == catalog.RouteGemini {
+			conv = gemini.NewStreamConverter(req.SourceFormat, res.rec.UpstreamID, req.OriginalRequest, upstreamBody)
+		} else {
+			conv = newStreamConverter(res.rec.Protocol, req.SourceFormat, &res.tools)
+		}
+		m.pumpStream(downID, id, res, conv)
 	}()
 	return okEnvelope(struct{}{}), nil
 }
 
-func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, sourceFormat string) {
+func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, conv streamConverter) {
 	var closeOnce sync.Once
 	closeStreams := func(downErrMsg string) {
 		closeOnce.Do(func() {
@@ -442,7 +475,6 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 	})
 	defer watchdog.Stop()
 
-	conv := newStreamConverter(res.rec.Protocol, sourceFormat, &res.tools)
 	var (
 		total          int64
 		upstreamClosed bool

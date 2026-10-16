@@ -15,7 +15,7 @@ import (
 
 // Defaults (spec 04 §2/§4).
 const (
-	DefaultBaseURL          = "https://opencode.ai/zen/go/v1"
+	DefaultBaseURL          = "https://opencode.ai/inference/go/v1"
 	DefaultConsoleURL       = "https://opencode.ai/console"
 	DefaultModelPrefix      = "opencode-go"
 	DefaultRefreshInterval  = 15 * time.Minute
@@ -41,6 +41,7 @@ type Protocols struct {
 	ChatCompletions bool
 	Messages        bool
 	Responses       bool
+	Gemini          bool
 }
 
 type RouteOverride struct {
@@ -99,10 +100,11 @@ type rawProtocols struct {
 	ChatCompletions *bool `yaml:"chat-completions"`
 	Messages        *bool `yaml:"messages"`
 	Responses       *bool `yaml:"responses"`
+	Gemini          *bool `yaml:"gemini"`
 }
 
 var (
-	validProtocols = map[string]bool{"chat-completions": true, "messages": true, "responses": true}
+	validProtocols = map[string]bool{"chat-completions": true, "messages": true, "responses": true, "gemini": true}
 )
 
 // Load decodes YAML, expands ${VAR} references in api-key values only,
@@ -151,6 +153,7 @@ func Load(yamlBytes []byte) (Config, error) {
 			ChatCompletions: orDefault(raw.Protocols.ChatCompletions, true),
 			Messages:        orDefault(raw.Protocols.Messages, true),
 			Responses:       orDefault(raw.Protocols.Responses, true),
+			Gemini:          orDefault(raw.Protocols.Gemini, true),
 		},
 		RouteOverrides:   raw.RouteOverrides,
 		AllowHTTP:        raw.AllowHTTP,

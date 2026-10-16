@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
 )
 
@@ -32,15 +33,15 @@ func TestConvertMessagesStatusErrors(t *testing.T) {
 	}
 
 	// Long bodies are bounded to a redacted snippet, never echoed whole.
-	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 200)))
-	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 83 {
+	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 300)))
+	if eErr == nil || !strings.HasSuffix(eErr.Message, "...") || len(eErr.Message) > 259 {
 		t.Fatalf("upstream body not bounded: %q", eErr.Message)
 	}
 
 	// Redaction work is bounded: bodies beyond 4096 bytes are truncated
 	// before snippet extraction, so the message stays snippet-sized.
 	_, eErr = ConvertNonStreamResponse("openai", 500, []byte(strings.Repeat("x", 1<<20)))
-	if eErr == nil || len(eErr.Message) > 83 {
+	if eErr == nil || len(eErr.Message) > 259 {
 		t.Fatalf("oversized upstream body not bounded: len = %d", len(eErr.Message))
 	}
 }
@@ -427,6 +428,37 @@ func TestConvertMessagesAggregatedTextVerbatim(t *testing.T) {
 	}
 }
 
+func TestConvertMessagesToResponsesNamespaceRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"namespace","name":"subagents","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	upstream := `{"id":"m_1","type":"message","role":"assistant","model":"m",` +
+		`"content":[{"type":"tool_use","id":"tu_1","name":"subagents__spawn_agent","input":{}}],` +
+		`"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`
+	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(upstream), rt)
+	if eErr != nil {
+		t.Fatalf("convert: %v", eErr)
+	}
+	var resp struct {
+		Output []struct {
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, out)
+	}
+	if len(resp.Output) != 1 || resp.Output[0].Type != "function_call" ||
+		resp.Output[0].CallID != "tu_1" || resp.Output[0].Name != "spawn_agent" ||
+		resp.Output[0].Namespace != "subagents" {
+		t.Fatalf("identity not restored: %s", out)
+	}
+}
+
 func TestConvertMessagesCacheUsageDetails(t *testing.T) {
 	body := `{"id":"m","model":"m","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}`
 	for _, format := range []string{"openai", "openai-response"} {
@@ -445,5 +477,30 @@ func TestConvertMessagesCacheUsageDetails(t *testing.T) {
 		if format == "openai-response" && (u["input_tokens_details"].(map[string]any)["cached_tokens"] != float64(3) || u["input_tokens_details"].(map[string]any)["cache_write_tokens"] != float64(1)) {
 			t.Fatalf("responses details = %v", u)
 		}
+	}
+}
+
+func TestConvertMessagesToResponsesCustomToolRestored(t *testing.T) {
+	rt := shared.NewResponseTools()
+	reqBody := `{"input":"hi","tools":[{"type":"custom","name":"apply_patch"}]}`
+	if _, eErr := BuildRequest("m", "openai-response", []byte(reqBody), nil, rt); eErr != nil {
+		t.Fatalf("BuildRequest: %v", eErr)
+	}
+	upstream := `{"id":"m_1","type":"message","role":"assistant","model":"m",` +
+		`"content":[{"type":"tool_use","id":"tu_1","name":"apply_patch","input":{"input":"*** Begin Patch"}}],` +
+		`"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`
+	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(upstream), rt)
+	if eErr != nil {
+		t.Fatalf("convert: %v", eErr)
+	}
+	var resp struct {
+		Output []map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, out)
+	}
+	if len(resp.Output) != 1 || resp.Output[0]["type"] != "custom_tool_call" || resp.Output[0]["call_id"] != "tu_1" ||
+		resp.Output[0]["name"] != "apply_patch" || resp.Output[0]["input"] != "*** Begin Patch" || resp.Output[0]["arguments"] != nil {
+		t.Fatalf("custom call not restored: %s", out)
 	}
 }

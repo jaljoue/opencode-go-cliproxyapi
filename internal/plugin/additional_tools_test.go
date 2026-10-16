@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // Exercise the executor boundary so routing, request translation, and reverse
@@ -91,7 +91,7 @@ func TestExecuteResponsesAdditionalTools(t *testing.T) {
 				}
 				m.bridge.WaitForInFlight(5 * time.Second)
 				wire := lastWire(t, f, httpMethod)
-				if wire["url"] != "https://opencode.ai/zen/go"+tc.endpoint || wire["method"] != http.MethodPost {
+				if wire["url"] != "https://opencode.ai/inference/go"+tc.endpoint || wire["method"] != http.MethodPost {
 					t.Fatalf("wrong endpoint: %v", wire)
 				}
 				var upstream map[string]any

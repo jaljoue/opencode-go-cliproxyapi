@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/adapter/shared"
 	"opencode-go-cliproxyapi/internal/errclass"
@@ -160,9 +160,6 @@ func finalize(req *messagesRequest, system []string, effort string, ts *pluginap
 		req.Messages = []anthropicMessage{}
 	}
 	if effort != "" {
-		if eErr := thinking.ValidateEffort(effort, ts); eErr != nil {
-			return nil, eErr
-		}
 		budget, _ := thinking.BudgetFromEffort(effort, ts)
 		applyThinking(req, budget)
 	}
@@ -288,6 +285,9 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 	req.Messages = b.msgs
 
 	for _, t := range src.Tools {
+		if t.Type == "namespace" {
+			continue
+		}
 		if eErr := shared.FunctionTool(t.Type, EndpointPath); eErr != nil {
 			return nil, eErr
 		}

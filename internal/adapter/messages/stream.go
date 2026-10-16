@@ -48,6 +48,8 @@ type blockState struct {
 	emitted bool            // openai: id/name attached to the first arguments fragment
 	text    strings.Builder // accumulated text_delta content (responses target)
 	args    strings.Builder // accumulated input_json_delta content (responses target)
+	// inputEmitted counts custom tool input bytes already streamed (responses target).
+	inputEmitted int
 }
 
 // NewStreamConverter prepares stream conversion for sourceFormat
@@ -304,7 +306,9 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 				return false, errclass.Translation("tool arguments fragment without a tool_use block start")
 			}
 			bs.args.WriteString(ev.Delta.PartialJSON)
-			*events = append(*events, sc.responsesEm().ArgsDelta(bs.id, bs.outIdx, ev.Delta.PartialJSON))
+			if delta := sc.responsesEm().ToolDelta(bs.id, bs.outIdx, bs.name, ev.Delta.PartialJSON, bs.args.String(), &bs.inputEmitted); delta != nil {
+				*events = append(*events, delta)
+			}
 		case "thinking_delta":
 			// FR-005 explicit omission policy: no standard Responses
 			// reasoning-delta event; dropped.
@@ -317,7 +321,7 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 		sc.captureCache(ev.Usage)
 		sc.stopReason = ev.Delta.StopReason
 	case "message_stop":
-		*events = append(*events, sc.responsesCompleted())
+		*events = append(*events, sc.responsesCompleted()...)
 		return true, nil
 	case "error":
 		return false, sseError(ev.Error)
@@ -326,18 +330,52 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 	return false, nil
 }
 
-// responsesCompleted builds the terminal response.completed event: shape
-// parity with the non-stream claudeToResponses converter — status comes
-// from the Responses vocabulary {completed, incomplete} via the observed
+// responsesCompleted builds the terminal event sequence: item lifecycle
+// completion events for every rendered output item followed by
+// response.completed — shape parity with the non-stream
+// claudeToResponses converter for the terminal payload, with status from
+// the Responses vocabulary {completed, incomplete} via the observed
 // stop_reason (max_tokens truncation → incomplete); tool calls are
 // represented by their function_call output items and never override the
 // status (FR-006). Shared by message_stop and Flush so an early upstream
 // close cannot diverge from the normal-path shape.
-func (sc *StreamConverter) responsesCompleted() []byte {
+func (sc *StreamConverter) responsesCompleted() [][]byte {
 	status := shared.ResponseStatusFromClaudeStop(sc.stopReason)
 	usage := shared.NewResponsesUsageFrom(sc.promptTokens+valueOrZero(sc.cacheRead)+valueOrZero(sc.cacheCreation), sc.completionTokens,
 		shared.UsageDetails{CachedTokens: sc.cacheRead, CacheWriteTokens: sc.cacheCreation})
-	return sc.responsesEm().Completed(status, usage, sc.outputItems())
+	items := sc.outputItems()
+	em := sc.responsesEm()
+	out := make([][]byte, 0, len(items)*2+1)
+	for idx, item := range items {
+		v, ok := item.(shared.RespItem)
+		if !ok {
+			continue
+		}
+		switch v.Type {
+		case "message":
+			text := responsesMessageText(v.Content)
+			out = append(out, em.TextDone(v.ID, idx, text), em.ContentPartDone(v.ID, idx, text), em.ItemDone(idx, v))
+		case "function_call", "custom_tool_call":
+			out = append(out, em.ToolDone(idx, v)...)
+		}
+	}
+	return append(out, em.Completed(status, usage, items))
+}
+
+// responsesMessageText extracts the aggregated output_text from a rendered
+// message item's content parts.
+func responsesMessageText(content []byte) string {
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Text)
+	}
+	return b.String()
 }
 
 // responsesEm binds the shared Responses emitter kernel to the captured
@@ -363,7 +401,7 @@ func (sc *StreamConverter) Flush() [][]byte {
 	}
 	switch sc.sourceFormat {
 	case "openai-response":
-		return [][]byte{sc.responsesCompleted()}
+		return sc.responsesCompleted()
 	case "openai":
 		return nil
 	default: // claude passthrough forwards verbatim; nothing deferred
