@@ -454,48 +454,56 @@ func TestClaudeSystemText(t *testing.T) {
 	}
 }
 
-func TestToolResultText(t *testing.T) {
+func TestToolResultContent(t *testing.T) {
 	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`)} {
-		if got, _ := ToolResultText(raw, "n"); got != "" {
-			t.Errorf("absent content = %q", got)
+		if got, images, _ := ToolResultContent(raw, "n"); got != "" || images != nil {
+			t.Errorf("absent content = %q, %v", got, images)
 		}
 	}
-	if got, _ := ToolResultText(json.RawMessage(`"plain"`), "n"); got != "plain" {
+	if got, _, _ := ToolResultContent(json.RawMessage(`"plain"`), "n"); got != "plain" {
 		t.Errorf("string content = %q", got)
 	}
-	got, eErr := ToolResultText(json.RawMessage(`[{"type":"text","text":"a"},{"type":"text","text":"b"}]`), "n")
-	if eErr != nil || got != "ab" {
-		t.Errorf("block array = %q, %v; want ab, nil", got, eErr)
+	text, images, eErr := ToolResultContent(json.RawMessage(
+		`[{"type":"text","text":"a"},{"type":"image","source":{"type":"url","url":"https://x"}},{"type":"text","text":"b"}]`), "n")
+	if eErr != nil || text != "ab" || len(images) != 1 || images[0] != "https://x" {
+		t.Errorf("block array = %q, %v, %+v", text, images, eErr)
 	}
-	if _, eErr := ToolResultText(json.RawMessage(`[{"type":"image","source":{}}]`), "tool messages carry text only"); eErr == nil ||
+	if _, _, eErr := ToolResultContent(json.RawMessage(`[{"type":"image"}]`), "n"); eErr == nil {
+		t.Error("image without source accepted")
+	}
+	if _, _, eErr := ToolResultContent(json.RawMessage(`[{"type":"video"}]`), "tool messages carry text only"); eErr == nil ||
 		eErr.Class != errclass.ClassTranslation ||
-		eErr.Message != `unsupported tool_result block type "image"; tool messages carry text only` {
-		t.Errorf("non-text block err = %+v", eErr)
+		eErr.Message != `unsupported tool_result block type "video"; tool messages carry text only` {
+		t.Errorf("unknown block err = %+v", eErr)
 	}
-	if _, eErr := ToolResultText(json.RawMessage(`42`), "n"); eErr == nil || eErr.Class != errclass.ClassTranslation {
+	if _, _, eErr := ToolResultContent(json.RawMessage(`42`), "n"); eErr == nil || eErr.Class != errclass.ClassTranslation {
 		t.Errorf("malformed content err = %+v", eErr)
 	}
 }
 
-func TestRespOutputText(t *testing.T) {
+func TestRespOutputContent(t *testing.T) {
 	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`)} {
-		if got, _ := RespOutputText(raw, "n"); got != "" {
-			t.Errorf("absent output = %q", got)
+		if got, images, _ := RespOutputContent(raw, "n"); got != "" || images != nil {
+			t.Errorf("absent output = %q, %v", got, images)
 		}
 	}
-	if got, _ := RespOutputText(json.RawMessage(`"plain"`), "n"); got != "plain" {
+	if got, _, _ := RespOutputContent(json.RawMessage(`"plain"`), "n"); got != "plain" {
 		t.Errorf("string output = %q", got)
 	}
-	got, eErr := RespOutputText(json.RawMessage(`[{"type":"input_text","text":"a"},{"type":"output_text","text":"b"},{"type":"text","text":"c"}]`), "n")
-	if eErr != nil || got != "abc" {
-		t.Errorf("part array = %q, %v; want abc, nil", got, eErr)
+	text, images, eErr := RespOutputContent(json.RawMessage(
+		`[{"type":"input_text","text":"a"},{"type":"input_image","image_url":"https://x"},{"type":"output_text","text":"b"},{"type":"image_url","image_url":{"url":"https://y"}},{"type":"text","text":"c"}]`), "n")
+	if eErr != nil || text != "abc" || len(images) != 2 || images[0] != "https://x" || images[1] != "https://y" {
+		t.Errorf("part array = %q, %v, %+v", text, images, eErr)
 	}
-	if _, eErr := RespOutputText(json.RawMessage(`[{"type":"input_image","image_url":"https://x"}]`), "tool messages carry text only"); eErr == nil ||
+	if _, _, eErr := RespOutputContent(json.RawMessage(`[{"type":"input_image"}]`), "n"); eErr == nil {
+		t.Error("image without url accepted")
+	}
+	if _, _, eErr := RespOutputContent(json.RawMessage(`[{"type":"input_file"}]`), "tool messages carry text only"); eErr == nil ||
 		eErr.Class != errclass.ClassTranslation ||
-		eErr.Message != `unsupported function_call_output content part type "input_image"; tool messages carry text only` {
-		t.Errorf("non-text part err = %+v", eErr)
+		eErr.Message != `unsupported function_call_output content part type "input_file"; tool messages carry text only` {
+		t.Errorf("unknown part err = %+v", eErr)
 	}
-	if _, eErr := RespOutputText(json.RawMessage(`42`), "n"); eErr == nil || eErr.Class != errclass.ClassTranslation {
+	if _, _, eErr := RespOutputContent(json.RawMessage(`42`), "n"); eErr == nil || eErr.Class != errclass.ClassTranslation {
 		t.Errorf("malformed output err = %+v", eErr)
 	}
 }
@@ -510,7 +518,7 @@ func TestDecodeInputItemsPartArrayOutput(t *testing.T) {
 	if eErr != nil {
 		t.Fatalf("DecodeInputItems = %+v", eErr)
 	}
-	text, eErr := RespOutputText(items[0].Output, "n")
+	text, _, eErr := RespOutputContent(items[0].Output, "n")
 	if eErr != nil || text != "out" {
 		t.Fatalf("output = %q, %v; want out, nil", text, eErr)
 	}

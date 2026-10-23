@@ -759,7 +759,7 @@ func TestFromClaudeMessagesErrors(t *testing.T) {
 		{"image base64 source empty", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64"}}]}]}`, errclass.ClassTranslation},
 		{"image unknown source type", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"s3"}}]}]}`, errclass.ClassTranslation},
 		{"malformed tool_result payload", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":42}]}]}`, errclass.ClassTranslation},
-		{"image inside tool_result rejected", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x/i.png"}}]}]}]}`, errclass.ClassTranslation},
+		{"unknown block inside tool_result rejected", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"video"}]}]}]}`, errclass.ClassTranslation},
 		{"unsupported block type", `{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"a"},{"type":"document","source":{"type":"text"}}]}]}`, errclass.ClassUnsupported},
 		{"malformed tool_choice", `{"max_tokens":10,"tool_choice":42}`, errclass.ClassTranslation},
 		{"unknown tool_choice type", `{"max_tokens":10,"tool_choice":{"type":"blowup"}}`, errclass.ClassTranslation},
@@ -770,13 +770,31 @@ func TestFromClaudeMessagesErrors(t *testing.T) {
 			wantErr(t, eErr, tc.class)
 		})
 	}
-	// The tool_result image rejection names the target field, mirroring
-	// the Chat Completions route's wording style — never silent loss.
+	// The tool_result rejection names the target field, mirroring the
+	// Chat Completions route's wording style — never silent loss.
 	_, eErr := BuildRequest("m", "claude", []byte(
-		`{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x/i.png"}}]}]}]}`), nil)
+		`{"max_tokens":10,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"video"}]}]}]}`), nil)
 	if eErr == nil || eErr.Class != errclass.ClassTranslation ||
-		!strings.Contains(eErr.Message, "function_call_output carries text only") {
-		t.Fatalf("tool_result image not rejected descriptively: %+v", eErr)
+		!strings.Contains(eErr.Message, "function_call_output carries text and images only") {
+		t.Fatalf("tool_result block not rejected descriptively: %+v", eErr)
+	}
+}
+
+// Images inside a tool_result ride in the function_call_output part array.
+func TestFromClaudeToolResultImages(t *testing.T) {
+	out, eErr := BuildRequest("m", "claude", []byte(`{"max_tokens":10,"messages":[{"role":"user","content":[
+		{"type":"tool_result","tool_use_id":"t","is_error":true,"content":[{"type":"text","text":"shot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}
+	]}]}`), nil)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	item := inputItems(t, decodeReq(t, out))[0].(map[string]any)
+	parts := item["output"].([]any)
+	if item["type"] != "function_call_output" || len(parts) != 2 ||
+		parts[0].(map[string]any)["text"] != "[error] shot" ||
+		parts[1].(map[string]any)["type"] != "input_image" ||
+		parts[1].(map[string]any)["image_url"] != "data:image/png;base64,AAAA" {
+		t.Fatalf("output = %v", item)
 	}
 }
 
@@ -869,16 +887,21 @@ func TestRespToolChoiceKindsExhaustive(t *testing.T) {
 	}
 }
 
-// Images in Chat Completions tool results are rejected descriptively like
-// the claude leg's tool_result policy — never silently dropped (FR-005).
-func TestFromChatCompletionsImageInToolContentRejected(t *testing.T) {
-	_, eErr := BuildRequest("m", "openai", []byte(
+// Images in Chat Completions tool results keep their per-part order in the
+// function_call_output part array (FR-005).
+func TestFromChatCompletionsImageInToolContent(t *testing.T) {
+	out, eErr := BuildRequest("m", "openai", []byte(
 		`{"messages":[{"role":"tool","tool_call_id":"t","content":[
 			{"type":"text","text":"a"},
 			{"type":"image_url","image_url":{"url":"https://x/i.png"}}]}]}`), nil)
-	if eErr == nil || eErr.Class != errclass.ClassTranslation ||
-		!strings.Contains(eErr.Message, "function_call_output carries text only") {
-		t.Fatalf("tool image not rejected descriptively: %+v", eErr)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	item := inputItems(t, decodeReq(t, out))[0].(map[string]any)
+	parts := item["output"].([]any)
+	if len(parts) != 2 || parts[0].(map[string]any)["text"] != "a" ||
+		parts[1].(map[string]any)["image_url"] != "https://x/i.png" {
+		t.Fatalf("output = %v", item)
 	}
 }
 

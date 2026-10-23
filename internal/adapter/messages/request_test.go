@@ -481,8 +481,24 @@ func TestResponsesFunctionCallOutputPartArray(t *testing.T) {
 		t.Errorf("part-array output block = %v", out)
 	}
 	_, eErr = respReq(t, `{"input":[{"type":"function_call_output","call_id":"fc_1","output":[{"type":"input_file","filename":"f"}]}]}`)
-	if eErr == nil || !strings.Contains(eErr.Message, "tool_result carries text only") {
+	if eErr == nil || !strings.Contains(eErr.Message, "tool_result carries text and images only") {
 		t.Errorf("non-text output err = %+v", eErr)
+	}
+}
+
+func TestResponsesFunctionCallOutputImages(t *testing.T) {
+	m, eErr := respReq(t, `{"input":[{"type":"function_call_output","call_id":"fc_1","output":[{"type":"input_text","text":"shot"},{"type":"input_image","image_url":"data:image/jpeg;base64,AAAA"}]}]}`)
+	if eErr != nil {
+		t.Fatalf("unexpected error: %v", eErr)
+	}
+	out := m["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	blocks := out["content"].([]any)
+	if len(blocks) != 2 || blocks[0].(map[string]any)["text"] != "shot" {
+		t.Fatalf("tool_result = %v", out)
+	}
+	src := blocks[1].(map[string]any)["source"].(map[string]any)
+	if src["type"] != "base64" || src["media_type"] != "image/jpeg" || src["data"] != "AAAA" {
+		t.Fatalf("image block = %v", blocks[1])
 	}
 }
 

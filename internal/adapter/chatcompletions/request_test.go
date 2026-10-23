@@ -505,6 +505,23 @@ func TestBuildRequestClaudeVariants(t *testing.T) {
 			t.Fatalf("is_error marker missing: %v", tool)
 		}
 	})
+	t.Run("tool_result images follow the tool messages", func(t *testing.T) {
+		m := mustBuild(t, "claude", `{"messages":[{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"shot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]},
+			{"type":"tool_result","tool_use_id":"t2","content":"plain"},
+			{"type":"text","text":"more"}
+		]}]}`, nil)
+		msgs := m["messages"].([]any)
+		if len(msgs) != 3 || msgs[0].(map[string]any)["content"] != "shot" || msgs[1].(map[string]any)["role"] != "tool" {
+			t.Fatalf("messages = %v", msgs)
+		}
+		parts := msgs[2].(map[string]any)["content"].([]any)
+		if len(parts) != 3 || parts[0].(map[string]any)["text"] != "Images returned by tool call t1:" ||
+			parts[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/png;base64,AAAA" ||
+			parts[2].(map[string]any)["text"] != "more" {
+			t.Fatalf("user message = %v", parts)
+		}
+	})
 }
 
 func TestBuildRequestResponses(t *testing.T) {
@@ -642,11 +659,45 @@ func TestBuildRequestResponsesVariants(t *testing.T) {
 			t.Fatalf("part-array output wrong: %v", tool)
 		}
 	})
-	t.Run("function_call_output image part rejected", func(t *testing.T) {
+	t.Run("function_call_output images follow the tool run", func(t *testing.T) {
+		m := mustBuild(t, "openai-response", `{"input":[
+			{"type":"function_call","call_id":"c1","name":"f","arguments":"{}"},
+			{"type":"function_call","call_id":"c2","name":"f","arguments":"{}"},
+			{"type":"function_call_output","call_id":"c1","output":[{"type":"input_text","text":"shot"},{"type":"input_image","image_url":"data:image/jpeg;base64,AAAA"}]},
+			{"type":"function_call_output","call_id":"c2","output":"plain"},
+			{"type":"message","role":"user","content":"next"}
+		]}`, nil)
+		msgs := m["messages"].([]any)
+		if len(msgs) != 5 {
+			t.Fatalf("messages = %v", msgs)
+		}
+		for i, want := range []string{"assistant", "tool", "tool", "user", "user"} {
+			if r := msgs[i].(map[string]any)["role"]; r != want {
+				t.Fatalf("msgs[%d].role = %v, want %s: %v", i, r, want, msgs)
+			}
+		}
+		if c := msgs[1].(map[string]any)["content"]; c != "shot" {
+			t.Fatalf("tool text = %v", c)
+		}
+		parts := msgs[3].(map[string]any)["content"].([]any)
+		if len(parts) != 2 || parts[0].(map[string]any)["text"] != "Images returned by tool call c1:" ||
+			parts[1].(map[string]any)["image_url"].(map[string]any)["url"] != "data:image/jpeg;base64,AAAA" {
+			t.Fatalf("image message = %v", parts)
+		}
+	})
+	t.Run("function_call_output trailing images flushed", func(t *testing.T) {
+		m := mustBuild(t, "openai-response",
+			`{"input":[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","image_url":{"url":"https://x"}}]}]}`, nil)
+		msgs := m["messages"].([]any)
+		if len(msgs) != 2 || msgs[1].(map[string]any)["role"] != "user" {
+			t.Fatalf("messages = %v", msgs)
+		}
+	})
+	t.Run("function_call_output unknown part rejected", func(t *testing.T) {
 		_, eErr := BuildRequest("m", "openai-response", []byte(
-			`{"input":[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_image","image_url":"https://x"}]}]}`), nil)
+			`{"input":[{"type":"function_call_output","call_id":"c1","output":[{"type":"input_file","file_id":"f"}]}]}`), nil)
 		if eErr == nil || !strings.Contains(eErr.Message, "tool messages carry text only") {
-			t.Fatalf("image output err = %+v", eErr)
+			t.Fatalf("unknown part err = %+v", eErr)
 		}
 	})
 	t.Run("system text parts joined", func(t *testing.T) {

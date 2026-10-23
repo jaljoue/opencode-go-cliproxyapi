@@ -230,21 +230,30 @@ func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSuppo
 	return encode(out), nil
 }
 
-// claudeResultText flattens tool_result content (string or text blocks)
-// into a tool-message string via the shared kernel; non-text blocks have
-// no tool-message equivalent and are rejected descriptively rather than
-// dropped (FR-005).
-func claudeResultText(content json.RawMessage) (string, *errclass.Error) {
-	return shared.ToolResultText(content, "tool messages carry text only")
+// toolImageParts renders the images a tool returned as user content
+// parts. Chat Completions tool messages carry text only, so callers place
+// these in a user message after the whole tool-message run (providers
+// reject anything between an assistant's tool_calls and its tool replies).
+// The label ties the images back to their call.
+func toolImageParts(callID string, urls []string) []ccContentPart {
+	if len(urls) == 0 {
+		return nil
+	}
+	parts := []ccContentPart{{Type: "text", Text: "Images returned by tool call " + callID + ":"}}
+	for _, u := range urls {
+		parts = append(parts, ccContentPart{Type: "image_url", ImageURL: &imageURLField{URL: u}})
+	}
+	return parts
 }
 
 // claudeUserMessages converts a user turn into Chat Completions messages:
 // text/image blocks become one user message (plain string when only
 // text), each tool_result block becomes a separate role:"tool" message
-// carrying its tool_use_id (FR-005).
+// carrying its tool_use_id (FR-005). Images inside tool_result blocks
+// follow the turn's tool messages in a user message (see toolImageParts).
 func claudeUserMessages(m *shared.ClaudeMessageRecord) ([]ccMessage, *errclass.Error) {
 	var msgs []ccMessage
-	var parts []ccContentPart
+	var parts, toolImages []ccContentPart
 	flush := func() {
 		if len(parts) == 0 {
 			return
@@ -267,10 +276,11 @@ func claudeUserMessages(m *shared.ClaudeMessageRecord) ([]ccMessage, *errclass.E
 		case "image":
 			parts = append(parts, ccContentPart{Type: "image_url", ImageURL: &imageURLField{URL: blk.URL}})
 		case "tool_result":
-			text, eErr := claudeResultText(blk.Result)
+			text, images, eErr := shared.ToolResultContent(blk.Result, "tool messages carry text only")
 			if eErr != nil {
 				return nil, eErr
 			}
+			toolImages = append(toolImages, toolImageParts(blk.CallID, images)...)
 			if blk.IsError {
 				// Same convention as the Responses-route twin so the
 				// flag is never silently erased (FR-005).
@@ -284,6 +294,7 @@ func claudeUserMessages(m *shared.ClaudeMessageRecord) ([]ccMessage, *errclass.E
 			return nil, shared.UnsupportedPartType(blk.Kind, EndpointPath)
 		}
 	}
+	parts = append(toolImages, parts...)
 	flush()
 	return msgs, nil
 }
@@ -373,7 +384,19 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 	}
 	addSystem(instr)
 
+	// Images from a run of function_call_output items wait until the run
+	// ends so the tool messages stay contiguous (see toolImageParts).
+	var toolImages []ccContentPart
+	flushToolImages := func() {
+		if len(toolImages) > 0 {
+			out.Messages = append(out.Messages, ccMessage{Role: "user", Content: toolImages})
+			toolImages = nil
+		}
+	}
 	for _, item := range items {
+		if item.Type != "function_call_output" && item.Type != "reasoning" {
+			flushToolImages()
+		}
 		switch item.Type {
 		case "message":
 			content, eErr := respContent(item.Content)
@@ -422,19 +445,21 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 				Role: "assistant", ToolCalls: []shared.CCToolCall{tc},
 			})
 		case "function_call_output":
-			output, eErr := shared.RespOutputText(item.Output, "tool messages carry text only")
+			output, images, eErr := shared.RespOutputContent(item.Output, "tool messages carry text only")
 			if eErr != nil {
 				return nil, eErr
 			}
 			out.Messages = append(out.Messages, ccMessage{
 				Role: "tool", Content: output, ToolCallID: item.CallID,
 			})
+			toolImages = append(toolImages, toolImageParts(item.CallID, images)...)
 		case "reasoning":
 			// omitted: no Chat Completions equivalent (FR-005 policy)
 		default:
 			return nil, shared.UnsupportedInputItemType(item.Type)
 		}
 	}
+	flushToolImages()
 
 	for _, t := range src.Tools {
 		if eErr := shared.FunctionTool(t.Type, EndpointPath); eErr != nil {

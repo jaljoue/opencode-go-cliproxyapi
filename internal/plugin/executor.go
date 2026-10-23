@@ -274,11 +274,14 @@ func deriveOpenCodeSessionID(sourceFormat string, originalRequest []byte) (strin
 				case "image":
 					content.WriteString(block.URL)
 				case "tool_result":
-					text, eErr := shared.ToolResultText(block.Result, "tool messages carry text only")
+					text, images, eErr := shared.ToolResultContent(block.Result, "tool results carry text and images only")
 					if eErr != nil {
 						return "", eErr
 					}
 					content.WriteString(text)
+					for _, u := range images {
+						content.WriteString(u)
+					}
 				}
 			}
 		}

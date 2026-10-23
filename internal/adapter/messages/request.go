@@ -379,12 +379,27 @@ func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupp
 				"type": "tool_use", "id": item.CallID, "name": item.Name, "input": input,
 			})
 		case "function_call_output":
-			output, eErr := shared.RespOutputText(item.Output, "tool_result carries text only")
+			text, images, eErr := shared.RespOutputContent(item.Output, "tool_result carries text and images only")
 			if eErr != nil {
 				return nil, eErr
 			}
+			var content any = text
+			if len(images) > 0 {
+				var blocks []anthropicBlock
+				if text != "" {
+					blocks = append(blocks, textBlock(text))
+				}
+				for _, u := range images {
+					src, eErr := shared.ImageSource(u)
+					if eErr != nil {
+						return nil, eErr
+					}
+					blocks = append(blocks, src)
+				}
+				content = blocks
+			}
 			b.add("user:tool", "user", anthropicBlock{
-				"type": "tool_result", "tool_use_id": item.CallID, "content": output,
+				"type": "tool_result", "tool_use_id": item.CallID, "content": content,
 			})
 		case "reasoning":
 			// Best-effort: keep summary text as a thinking block;

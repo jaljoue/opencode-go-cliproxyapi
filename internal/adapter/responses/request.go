@@ -11,7 +11,6 @@ package responses
 
 import (
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 
@@ -187,6 +186,22 @@ func imagePart(url string) map[string]any {
 	return map[string]any{"type": "input_image", "image_url": url}
 }
 
+// toolOutput renders a function_call_output output: a plain string when
+// the tool returned only text, otherwise text then image parts.
+func toolOutput(text string, images []string) any {
+	if len(images) == 0 {
+		return text
+	}
+	var parts []map[string]any
+	if text != "" {
+		parts = append(parts, textPart("tool", text))
+	}
+	for _, u := range images {
+		parts = append(parts, imagePart(u))
+	}
+	return parts
+}
+
 // respToolChoice renders a shared.DecodeToolChoice kind into the Responses
 // wire value; absent yields nil so omitempty drops the field. It is
 // infallible: shared.DecodeToolChoice emits exactly the closed set below,
@@ -328,16 +343,17 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 			if eErr != nil {
 				return nil, eErr
 			}
+			var output any = shared.JoinTexts(parts)
 			for _, p := range parts {
-				if typ, _ := p["type"].(string); typ != "input_text" && typ != "output_text" {
-					return nil, errclass.Translation(fmt.Sprintf(
-						"unsupported tool content part type %q; function_call_output carries text only", typ))
+				if p["type"] == "input_image" {
+					output = parts // mixed parts keep their per-part order
+					break
 				}
 			}
 			req.Input = append(req.Input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": m.ToolCallID,
-				"output":  shared.JoinTexts(parts),
+				"output":  output,
 			})
 		default:
 			return nil, shared.ValidateRole(m.Role, EndpointPath)
@@ -466,17 +482,17 @@ func fromClaudeMessages(upstreamModel string, body []byte, ts *pluginapi.Thinkin
 				})
 			case "tool_result":
 				flush()
-				output, eErr := shared.ToolResultText(blk.Result, "function_call_output carries text only")
+				text, images, eErr := shared.ToolResultContent(blk.Result, "function_call_output carries text and images only")
 				if eErr != nil {
 					return nil, eErr
 				}
 				if blk.IsError {
-					output = shared.ToolResultErrorPrefix + output
+					text = shared.ToolResultErrorPrefix + text
 				}
 				req.Input = append(req.Input, map[string]any{
 					"type":    "function_call_output",
 					"call_id": blk.CallID,
-					"output":  output,
+					"output":  toolOutput(text, images),
 				})
 			case "thinking", "redacted_thinking":
 				// omitted per the FR-005 policy in the doc comment

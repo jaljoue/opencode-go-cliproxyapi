@@ -415,72 +415,87 @@ func ClaudeSystemText(raw json.RawMessage) (string, *errclass.Error) {
 	return b.String(), nil
 }
 
-// ToolResultText flattens Claude tool_result content (JSON string or text
-// block array) into one text string for the target protocol's tool-result
-// field. Non-text blocks have no textual representation and are rejected
-// descriptively rather than dropped (FR-005); targetNoun names the target
-// wire vocabulary so each serving route keeps its own wording ("tool
-// messages carry text only", "function_call_output carries text only").
-// One kernel serves both adapters so the flatten and rejection policy
-// cannot diverge again.
-func ToolResultText(raw json.RawMessage, targetNoun string) (string, *errclass.Error) {
+// ToolResultContent splits Claude tool_result content (JSON string or
+// block array) into its concatenated text and its image URLs (in order);
+// each target route decides how to carry the images. Other block types
+// are rejected descriptively rather than dropped (FR-005); targetNoun
+// names the target wire vocabulary so each route keeps its own wording.
+// One kernel serves every adapter so the policy cannot diverge again.
+func ToolResultContent(raw json.RawMessage, targetNoun string) (string, []string, *errclass.Error) {
 	if !HasContent(raw) {
-		return "", nil
+		return "", nil, nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
+		return s, nil, nil
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+	var blocks []claudeWireBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return "", errclass.Translation("tool_result content must be a string or an array of blocks")
+		return "", nil, errclass.Translation("tool_result content must be a string or an array of blocks")
 	}
 	var b strings.Builder
+	var images []string
 	for _, blk := range blocks {
-		if blk.Type != "text" {
-			return "", errclass.Translation(fmt.Sprintf(
+		switch blk.Type {
+		case "text":
+			b.WriteString(blk.Text)
+		case "image":
+			if blk.Source == nil {
+				return "", nil, errclass.Translation("image block missing source")
+			}
+			url, eErr := ClaudeImageURL(blk.Source.Type, blk.Source.URL, blk.Source.MediaType, blk.Source.Data)
+			if eErr != nil {
+				return "", nil, eErr
+			}
+			images = append(images, url)
+		default:
+			return "", nil, errclass.Translation(fmt.Sprintf(
 				"unsupported tool_result block type %q; %s", blk.Type, targetNoun))
 		}
-		b.WriteString(blk.Text)
 	}
-	return b.String(), nil
+	return b.String(), images, nil
 }
 
-// RespOutputText flattens a Responses function_call_output output field
+// RespOutputContent splits a Responses function_call_output output field
 // (JSON string or content-part array — the Responses schema allows both,
 // and clients send the array form whenever a tool returns multi-part
-// content) into one text string for the target protocol's tool-result
-// field. It is the Responses-source sibling of ToolResultText: same
-// concatenation, same targetNoun wording, and non-text parts rejected
-// descriptively rather than dropped (FR-005). One kernel serves both
-// Responses-source builders so the policy cannot diverge again.
-func RespOutputText(raw json.RawMessage, targetNoun string) (string, *errclass.Error) {
+// content) into its concatenated text and its image URLs (in order). It
+// is the Responses-source sibling of ToolResultContent: same split, same
+// targetNoun wording, other part types rejected descriptively (FR-005).
+func RespOutputContent(raw json.RawMessage, targetNoun string) (string, []string, *errclass.Error) {
 	if !HasContent(raw) {
-		return "", nil
+		return "", nil, nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
+		return s, nil, nil
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		ImageURL json.RawMessage `json:"image_url"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", errclass.Translation("function_call_output output must be a string or an array of content parts")
+		return "", nil, errclass.Translation("function_call_output output must be a string or an array of content parts")
 	}
 	var b strings.Builder
+	var images []string
 	for _, p := range parts {
-		if p.Type != "input_text" && p.Type != "output_text" && p.Type != "text" {
-			return "", errclass.Translation(fmt.Sprintf(
+		switch p.Type {
+		case "input_text", "output_text", "text":
+			b.WriteString(p.Text)
+		case "input_image", "image_url":
+			url, eErr := OpenAIImageURL(p.ImageURL)
+			if eErr != nil {
+				return "", nil, eErr
+			}
+			images = append(images, url)
+		default:
+			return "", nil, errclass.Translation(fmt.Sprintf(
 				"unsupported function_call_output content part type %q; %s", p.Type, targetNoun))
 		}
-		b.WriteString(p.Text)
 	}
-	return b.String(), nil
+	return b.String(), images, nil
 }
 
 // ClaudeImageURL converts an Anthropic image block source into an image
