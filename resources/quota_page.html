@@ -164,12 +164,18 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     const raw = localStorage.getItem("cli-proxy-auth");
     if (!raw) return "";
     try {
+      // Management Center obfuscates its stored auth state. v2 keys the XOR on
+      // the host alone; legacy v1 also mixed in the user agent.
       let decoded = raw;
-      if (raw.startsWith("enc::v1::")) {
-        const bytes = Uint8Array.from(atob(raw.slice(9)), char => char.charCodeAt(0));
-        const seed = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+      const salt = "cli-proxy-api-webui::secure-storage|" + location.host;
+      const formats = [["enc::v2::", salt], ["enc::v1::", salt + "|" + navigator.userAgent]];
+      for (const [prefix, secret] of formats) {
+        if (!raw.startsWith(prefix)) continue;
+        const bytes = Uint8Array.from(atob(raw.slice(prefix.length)), char => char.charCodeAt(0));
+        const seed = new TextEncoder().encode(secret);
         for (let i = 0; i < bytes.length; i++) bytes[i] ^= seed[i % seed.length];
         decoded = new TextDecoder().decode(bytes);
+        break;
       }
       const parsed = JSON.parse(decoded);
       if (parsed && parsed.state && parsed.state.managementKey) return typeof parsed.state.managementKey === "string" ? parsed.state.managementKey : "";
