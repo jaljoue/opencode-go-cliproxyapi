@@ -2,55 +2,33 @@ package plugin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"opencode-go-cliproxyapi/internal/config"
-	"opencode-go-cliproxyapi/resources"
 )
 
-type quotaWindow struct {
-	Status   string `json:"status"`
-	Percent  int    `json:"percent"`
-	ResetsAt string `json:"resets_at"`
-}
+// quotaDisplayName labels the provider and its quota group in Management Center.
+const quotaDisplayName = "OpenCode Go"
 
-type quotaUsage struct {
-	Rolling quotaWindow `json:"rolling"`
-	Weekly  quotaWindow `json:"weekly"`
-	Monthly quotaWindow `json:"monthly"`
-}
-
-type quotaCard struct {
-	KeyID    string      `json:"key_id"`
-	Label    string      `json:"label"`
-	PlanType string      `json:"plan_type,omitempty"`
-	Email    string      `json:"email,omitempty"`
-	Usage    *quotaUsage `json:"usage,omitempty"`
-}
-
-type quotaRequest struct {
-	KeyID string `json:"key_id"`
-}
-
-type usageResponse struct {
-	Usage struct {
-		Rolling quotaUpstreamWindow `json:"rolling"`
-		Weekly  quotaUpstreamWindow `json:"weekly"`
-		Monthly quotaUpstreamWindow `json:"monthly"`
-	} `json:"usage"`
+// quotaWindows maps OpenCode's usage windows to normalized bucket windows,
+// in display order. "5h" and "weekly" are window names Management Center
+// already recognizes.
+var quotaWindows = []struct{ upstream, window, description string }{
+	{"rolling", "5h", "5-hour limit"},
+	{"weekly", "weekly", "Weekly limit"},
+	{"monthly", "monthly", "Monthly limit"},
 }
 
 type quotaUpstreamWindow struct {
-	Status   string `json:"status"`
-	Percent  int    `json:"percent"`
-	ResetsAt string `json:"resetsAt"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt string   `json:"resetsAt"`
 }
 
 type goStatus struct {
@@ -63,85 +41,97 @@ type budgetMember struct {
 	Email  string `json:"email"`
 }
 
-func quotaIdentity(key string) (id, label string) {
-	digest := sha256.Sum256([]byte(key))
-	hash := hex.EncodeToString(digest[:])
-	return "opencode-go-key-" + hash, "OpenCode Go credential " + hash[:12]
+func quotaDescribe() pluginapi.QuotaDescribeResponse {
+	return pluginapi.QuotaDescribeResponse{SupportedProviders: []string{ProviderID}, DisplayName: quotaDisplayName}
 }
 
-func (m *Manager) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
-	if req.Method == http.MethodGet && req.Path == "/v0/resource/plugins/"+pluginName+"/quota" {
-		return pluginapi.ManagementResponse{Headers: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}, Body: []byte(resources.QuotaPage)}, nil
+// FetchQuota reads usage for the credential CPA selected. It never falls back
+// to a configured key, so a quota reading always belongs to that credential.
+func (m *Manager) FetchQuota(ctx context.Context, req pluginapi.QuotaFetchRequest) (pluginapi.QuotaFetchResponse, error) {
+	if req.Provider != "" && req.Provider != ProviderID {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("unsupported quota provider")
 	}
-	if req.Method != http.MethodPost || req.Path != "/v0/management/plugins/"+pluginName+"/quota-usage" {
-		return pluginapi.ManagementResponse{StatusCode: http.StatusNotFound, Body: []byte(`{"error":"not found"}`)}, nil
+	key := quotaKey(req)
+	if key == "" {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota credential has no API key")
 	}
-	var body quotaRequest
-	if len(req.Body) > 0 {
-		if err := json.Unmarshal(req.Body, &body); err != nil {
-			return pluginapi.ManagementResponse{StatusCode: http.StatusBadRequest, Body: []byte(`{"error":"invalid request"}`)}, nil
-		}
+	if m.bridge == nil {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota bridge unavailable")
 	}
 	m.mu.RLock()
 	baseURL, consoleURL, timeout := m.cfg.BaseURL, m.cfg.ConsoleURL, m.cfg.RequestTimeout
-	keys := append([]config.APIKey(nil), m.cfg.APIKeys...)
 	m.mu.RUnlock()
-	if body.KeyID == "" {
-		cards := make([]quotaCard, 0, len(keys))
-		for _, key := range keys {
-			id, label := quotaIdentity(key.Value)
-			cards = append(cards, quotaCard{KeyID: id, Label: label})
-		}
-		return quotaJSON(quotaList{Cards: cards})
+	if timeout <= 0 {
+		timeout = config.DefaultRequestTimeout
 	}
-	for _, key := range keys {
-		id, label := quotaIdentity(key.Value)
-		if id != body.KeyID {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var usage struct {
+		Usage map[string]quotaUpstreamWindow `json:"usage"`
+	}
+	if err := getJSON(ctx, m.bridge, strings.TrimRight(baseURL, "/")+"/usage", key, &usage); err != nil {
+		return pluginapi.QuotaFetchResponse{}, err
+	}
+	resp, err := normalizeQuota(usage.Usage)
+	if err != nil {
+		return pluginapi.QuotaFetchResponse{}, err
+	}
+	plan, email := fetchAccount(ctx, m.bridge, consoleURL, key)
+	if plan != "" {
+		resp.Subscription = &pluginapi.QuotaSubscription{Plan: plan, TierName: planLabel(plan)}
+	}
+	if email != "" {
+		if err := m.persistEmail(ctx, req.AuthIndex, req.AuthID, email); err != nil {
+			_ = m.bridge.Log("warn", "quota email was not saved to the auth record", map[string]any{"error": err.Error()})
+		}
+	}
+	return resp, nil
+}
+
+// quotaKey reads the API key from the attributes set by ParseAuth, falling
+// back to the stored auth record fields the host passes as metadata.
+func quotaKey(req pluginapi.QuotaFetchRequest) string {
+	if key := strings.TrimSpace(req.Attributes["api_key"]); key != "" {
+		return key
+	}
+	key, _ := req.Metadata["api_key"].(string)
+	return strings.TrimSpace(key)
+}
+
+// normalizeQuota converts OpenCode's used percentages into remaining
+// fractions. Missing windows are omitted; an invalid percentage fails the
+// reading rather than reporting a made-up value.
+func normalizeQuota(usage map[string]quotaUpstreamWindow) (pluginapi.QuotaFetchResponse, error) {
+	buckets := make([]pluginapi.QuotaBucket, 0, len(quotaWindows))
+	for _, w := range quotaWindows {
+		window, ok := usage[w.upstream]
+		if !ok || window.Percent == nil {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		usage, err := fetchQuota(ctx, m.bridge, baseURL, key.Value)
-		if err != nil {
-			return pluginapi.ManagementResponse{StatusCode: http.StatusBadGateway, Body: []byte(`{"error":"quota refresh failed"}`)}, nil
+		percent := *window.Percent
+		if math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {
+			return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota percentage invalid")
 		}
-		card := quotaCard{KeyID: id, Label: label, Usage: &usage}
-		card.PlanType, card.Email = fetchAccount(ctx, m.bridge, consoleURL, key.Value)
-		if card.Email != "" {
-			if err := m.persistEmail(ctx, id, card.Email); err != nil {
-				_ = m.bridge.Log("warn", "quota email was not saved to the auth record", map[string]any{"error": err.Error()})
-			}
+		bucket := pluginapi.QuotaBucket{Window: w.window, RemainingFraction: 1 - percent/100, Description: w.description}
+		if reset, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(window.ResetsAt)); err == nil {
+			bucket.ResetTime = reset.UTC().Format(time.RFC3339)
 		}
-		return quotaJSON(card)
+		buckets = append(buckets, bucket)
 	}
-	return pluginapi.ManagementResponse{StatusCode: http.StatusNotFound, Body: []byte(`{"error":"unknown quota key"}`)}, nil
+	if len(buckets) == 0 {
+		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota response has no readings")
+	}
+	return pluginapi.QuotaFetchResponse{Groups: []pluginapi.QuotaGroup{{DisplayName: quotaDisplayName, Buckets: buckets}}}, nil
 }
 
-type quotaList struct {
-	Cards []quotaCard `json:"cards"`
-}
-
-func quotaJSON(v any) (pluginapi.ManagementResponse, error) {
-	body, err := json.Marshal(v)
-	if err != nil {
-		return pluginapi.ManagementResponse{}, fmt.Errorf("quota response encoding failed")
+// planLabel turns an OpenCode product id such as "go-plus" into "Go Plus".
+func planLabel(plan string) string {
+	words := strings.FieldsFunc(plan, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	for i, word := range words {
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
 	}
-	return pluginapi.ManagementResponse{Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: body}, nil
-}
-
-func fetchQuota(ctx context.Context, bridge *HostBridge, baseURL, key string) (quotaUsage, error) {
-	if bridge == nil {
-		return quotaUsage{}, fmt.Errorf("quota bridge unavailable")
-	}
-	var decoded usageResponse
-	if err := getJSON(ctx, bridge, strings.TrimRight(baseURL, "/")+"/usage", key, &decoded); err != nil {
-		return quotaUsage{}, err
-	}
-	return quotaUsage{
-		Rolling: quotaWindow{Status: decoded.Usage.Rolling.Status, Percent: decoded.Usage.Rolling.Percent, ResetsAt: decoded.Usage.Rolling.ResetsAt},
-		Weekly:  quotaWindow{Status: decoded.Usage.Weekly.Status, Percent: decoded.Usage.Weekly.Percent, ResetsAt: decoded.Usage.Weekly.ResetsAt},
-		Monthly: quotaWindow{Status: decoded.Usage.Monthly.Status, Percent: decoded.Usage.Monthly.Percent, ResetsAt: decoded.Usage.Monthly.ResetsAt},
-	}, nil
+	return strings.Join(words, " ")
 }
 
 // fetchAccount reads the Go plan and the subscriber's email from the OpenCode
@@ -189,13 +179,17 @@ func getJSON(ctx context.Context, bridge *HostBridge, endpoint, key string, out 
 // persistEmail stores the subscriber email in the credential's auth file so
 // CPA lists it as the account, as it does for Claude and Codex. The file is
 // rewritten only when the listed email differs, and its other fields are kept.
-func (m *Manager) persistEmail(ctx context.Context, id, email string) error {
+func (m *Manager) persistEmail(ctx context.Context, authIndex, id, email string) error {
 	entries, err := m.bridge.AuthList(ctx)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.ID != id && entry.Name != id+".json" {
+		matched := authIndex != "" && entry.AuthIndex == authIndex
+		if !matched && id != "" {
+			matched = entry.ID == id || entry.Name == id+".json"
+		}
+		if !matched {
 			continue
 		}
 		if entry.Disabled || strings.TrimSpace(entry.Email) == email {

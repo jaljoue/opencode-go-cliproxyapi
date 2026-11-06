@@ -32,8 +32,8 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - **Thinking & Reasoning Support**: Maps reasoning effort across supported client and upstream formats.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
-- **OpenCode Go Quota Page**: Management Center includes a separate `OpenCode Go Quota` page. Page load lists credentials without contacting OpenCode; each card is refreshed manually and independently, and quota values do not affect routing or CPA's native quota page.
-- **Plan and Account Email**: A quota refresh also reads the Go plan (`go`, `go-plus`) and the subscriber's email from the OpenCode Console (`{console-url}/api/go/status` and `{console-url}/api/v1/budgets/members`). These endpoints require an API key with **All** permissions; inference-only keys still get usage, without plan or email. The plan is informational and does not affect routing. The email is written to the credential's auth file so CPA lists it as the account, as it does for Claude and Codex.
+- **Native quotas**: The plugin is a CLIProxyAPI quota provider. Management Center fetches a credential's quota with `POST /v8/management/plugins/opencode-go-cliproxyapi/quota` and `{"auth_index":"<index>"}`; the plugin reads OpenCode's usage with that credential's key. Windows are reported as buckets `5h` (OpenCode's rolling limit), `weekly`, and `monthly`, each with `remainingFraction` and `resetTime`. Missing windows are omitted. Quota reset is unsupported. Quota values do not affect routing.
+- **Plan and Account Email**: A quota fetch also reads the Go plan (`go`, `go-plus`) and the subscriber's email from the OpenCode Console (`{console-url}/api/go/status` and `{console-url}/api/v1/budgets/members`). These endpoints require an API key with **All** permissions; inference-only keys still get usage, without plan or email. The plan is returned as `subscription.plan` (with `subscription.tierName`, e.g. `Go Plus`) and is informational and does not affect routing. The email is written to the credential's auth file so CPA lists it as the account, as it does for Claude and Codex.
 
 Responses clients such as Codex can supply function declarations in
 `input` items with `type: "additional_tools"`. The plugin merges these with
@@ -117,7 +117,7 @@ plugins:
       # Optional catalog endpoint override (default: "{base-url}/models")
       # catalog-url: "https://opencode.ai/inference/go/v1/models"
 
-      # OpenCode Console root for the quota page's plan and account email (default: "https://opencode.ai/console")
+      # OpenCode Console root for the quota plan and account email (default: "https://opencode.ai/console")
       # console-url: "https://opencode.ai/console"
 
       # Client-facing model ID prefix configuration
