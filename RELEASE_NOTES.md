@@ -1,3 +1,16 @@
+## Native quota provider
+
+### Changes
+
+- The plugin is now a CLIProxyAPI quota provider. Management Center reads OpenCode Go quota from `POST /v8/management/plugins/opencode-go-cliproxyapi/quota` (or `/v0/management/...`) with the credential's `auth_index`, the same way it reads quota for other plugins.
+- Quota is returned as buckets `5h`, `weekly`, and `monthly` with `remainingFraction` and `resetTime`. The Go plan is returned as `subscription.plan`, and the subscriber email is still saved to the credential's auth file.
+- Remove the `OpenCode Go Quota` page and the `/v0/management/plugins/opencode-go-cliproxyapi/quota-usage` route. CLIProxyAPI v8 only serves plugin-declared routes under `/v0/management`, so Management Center builds that use `/v8/management` could not reach them.
+
+### Upgrade
+
+- Requires a Management Center build that reads OpenCode Go quota through the plugin quota API. Older builds that call `quota-usage` show quota errors.
+- Replace the plugin binary and restart CLIProxyAPI.
+
 ## What's Changed
 
 Full OpenAI Codex CLI support across all models: multi-agent namespaces, custom programmatic tools (`exec`), tool call results, and reasoning efforts are fully functional.
